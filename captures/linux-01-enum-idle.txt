@@ -1,0 +1,45 @@
+Capture: linux-01-enum-idle.pcapng
+Interface: usbmon1 (Raspberry Pi, bus 1)
+Device:    VID 0x0483 / PID 0x5750, sysfs path 1-1.5
+Serial:    4EAA4B964C00   (looks like STM32 UID-derived)
+Kernel:    Linux raslabel 6.6.51+rpt-rpi-v8 aarch64
+Date:      2026-04-18
+
+What was done:
+  1. Started dumpcap on usbmon1.
+  2. Triggered re-enumeration by writing 0 then 1 to
+     /sys/bus/usb/devices/1-1.5/authorized (physical unplug not possible
+     since the device is remote). The toggle produces identical
+     URB_SUBMIT_CONTROL traffic to a real replug.
+  3. Idled for 30 s with no host traffic.
+  4. Stopped the capture.
+
+What the capture contains:
+  * 34 frames total, all USB CONTROL transfers on endpoint 0x80/0x00.
+  * Frames 1-24: initial enumeration after the module's internal toggle
+    (GET_DESCRIPTOR DEVICE → CONFIG → STRING × 3).
+  * Frames 25-28: authorized=0/1 toggle triggered SET_CONFIGURATION (req 9).
+  * Frames 29-34: post-enumeration descriptor fetches — including the
+    HID Report Descriptor via bmRequestType=0x81, bRequest=6 (33 bytes).
+
+HID Report Descriptor bytes (frame 34, matches firmware @ offset 0xB8BF):
+    05 8c 09 01 a1 01 09 03 15 00 26 00 ff 75 08 95
+    40 81 02 09 04 15 00 26 00 ff 75 08 95 40 91 02
+    c0
+
+  → Usage Page = 0x8C (Bar Code Scanner)
+  → declares a 64-byte INPUT report (81 02)
+  → declares a 64-byte OUTPUT report (91 02)
+  → does NOT declare a Feature Report (so HID SET_FEATURE fails, as
+    confirmed in linux-02b-setreport-probe.pcapng)
+
+Critical observation:
+  ZERO interrupt-IN frames during the 30 s idle window.
+  The device does NOT spontaneously emit input reports.
+
+Implication for the macOS "no input reports" puzzle:
+  macOS isn't hiding input reports the device is sending — the device
+  simply isn't sending any unless asked. This means fixing macOS input
+  handling is necessary but NOT sufficient: we also need to issue the
+  command(s) that trigger device replies, and we don't yet know what
+  command framing actually works (see linux-02-vendor-probe.txt).

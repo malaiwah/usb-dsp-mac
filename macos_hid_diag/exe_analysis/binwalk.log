@@ -1,0 +1,342 @@
+
+                                                           /Users/mbelleau/Code/usb_dsp_mac/macos_hid_diag/exe_analysis/extracted/DSP-408.exe
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+DECIMAL                            HEXADECIMAL                        DESCRIPTION
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+0                                  0x0                                Windows PE binary, machine type: Intel x86
+44132352                           0x2A16800                          PNG image, total size: 2453 bytes
+44134808                           0x2A17198                          PNG image, total size: 2476 bytes
+44137288                           0x2A17B48                          PNG image, total size: 2807 bytes
+44140096                           0x2A18640                          PNG image, total size: 2586 bytes
+44142688                           0x2A19060                          PNG image, total size: 2626 bytes
+44145320                           0x2A19AA8                          PNG image, total size: 2932 bytes
+44148256                           0x2A1A620                          PNG image, total size: 2647 bytes
+44150904                           0x2A1B078                          PNG image, total size: 2670 bytes
+44153576                           0x2A1BAE8                          PNG image, total size: 2975 bytes
+44156552                           0x2A1C688                          PNG image, total size: 15795 bytes
+44172352                           0x2A20440                          PNG image, total size: 15333 bytes
+44187688                           0x2A24028                          PNG image, total size: 15989 bytes
+44203680                           0x2A27EA0                          PNG image, total size: 17514 bytes
+44221200                           0x2A2C310                          PNG image, total size: 15281 bytes
+44236488                           0x2A2FEC8                          PNG image, total size: 15897 bytes
+44252392                           0x2A33CE8                          PNG image, total size: 17467 bytes
+44269864                           0x2A38128                          PNG image, total size: 15439 bytes
+44285304                           0x2A3BD78                          PNG image, total size: 16086 bytes
+44301392                           0x2A3FC50                          PNG image, total size: 17532 bytes
+44318928                           0x2A440D0                          PNG image, total size: 26520 bytes
+44345448                           0x2A4A868                          PNG image, total size: 28127 bytes
+44373576                           0x2A51648                          PNG image, total size: 31578 bytes
+44405160                           0x2A591A8                          PNG image, total size: 15434 bytes
+44420600                           0x2A5CDF8                          PNG image, total size: 16080 bytes
+44436680                           0x2A60CC8                          PNG image, total size: 17516 bytes
+44454200                           0x2A65138                          PNG image, total size: 15261 bytes
+44469464                           0x2A68CD8                          PNG image, total size: 16048 bytes
+44485512                           0x2A6CB88                          PNG image, total size: 17979 bytes
+44503496                           0x2A711C8                          PNG image, total size: 38622 bytes
+44542120                           0x2A7A8A8                          PNG image, total size: 40901 bytes
+44583024                           0x2A84870                          PNG image, total size: 45894 bytes
+44628920                           0x2A8FBB8                          PNG image, total size: 15253 bytes
+44644176                           0x2A93750                          PNG image, total size: 16041 bytes
+44660224                           0x2A97600                          PNG image, total size: 17978 bytes
+44678208                           0x2A9BC40                          PNG image, total size: 13169 bytes
+44691384                           0x2A9EFB8                          PNG image, total size: 13289 bytes
+44704680                           0x2AA23A8                          PNG image, total size: 14296 bytes
+44718976                           0x2AA5B80                          PNG image, total size: 15592 bytes
+44734568                           0x2AA9868                          PNG image, total size: 16231 bytes
+44750800                           0x2AAD7D0                          PNG image, total size: 17692 bytes
+44768496                           0x2AB1CF0                          PNG image, total size: 15560 bytes
+44784056                           0x2AB59B8                          PNG image, total size: 16137 bytes
+44800200                           0x2AB98C8                          PNG image, total size: 17672 bytes
+44817872                           0x2ABDDD0                          PNG image, total size: 15624 bytes
+44833496                           0x2AC1AD8                          PNG image, total size: 16273 bytes
+44849776                           0x2AC5A70                          PNG image, total size: 17663 bytes
+44867440                           0x2AC9F70                          PNG image, total size: 27082 bytes
+44894528                           0x2AD0940                          PNG image, total size: 28690 bytes
+44923224                           0x2AD7958                          PNG image, total size: 32004 bytes
+44955232                           0x2ADF660                          PNG image, total size: 15621 bytes
+44970856                           0x2AE3368                          PNG image, total size: 16262 bytes
+44987120                           0x2AE72F0                          PNG image, total size: 17655 bytes
+45004776                           0x2AEB7E8                          PNG image, total size: 39399 bytes
+45044176                           0x2AF51D0                          PNG image, total size: 41618 bytes
+45085800                           0x2AFF468                          PNG image, total size: 46346 bytes
+45132152                           0x2B0A978                          PNG image, total size: 12967 bytes
+45145120                           0x2B0DC20                          PNG image, total size: 12823 bytes
+45157944                           0x2B10E38                          PNG image, total size: 13931 bytes
+45171880                           0x2B144A8                          PNG image, total size: 11928 bytes
+45183808                           0x2B17340                          PNG image, total size: 12145 bytes
+45195960                           0x2B1A2B8                          PNG image, total size: 13287 bytes
+45209248                           0x2B1D6A0                          PNG image, total size: 11990 bytes
+45221240                           0x2B20578                          PNG image, total size: 12199 bytes
+45233440                           0x2B23520                          PNG image, total size: 13278 bytes
+45246720                           0x2B26900                          PNG image, total size: 8550 bytes
+45255272                           0x2B28A68                          PNG image, total size: 10630 bytes
+45265904                           0x2B2B3F0                          PNG image, total size: 10453 bytes
+45276360                           0x2B2DCC8                          PNG image, total size: 8476 bytes
+45284840                           0x2B2FDE8                          PNG image, total size: 10524 bytes
+45295368                           0x2B32708                          PNG image, total size: 10359 bytes
+45305728                           0x2B34F80                          PNG image, total size: 1838 bytes
+45307568                           0x2B356B0                          PNG image, total size: 1864 bytes
+45309432                           0x2B35DF8                          PNG image, total size: 2160 bytes
+45311592                           0x2B36668                          PNG image, total size: 1966 bytes
+45313560                           0x2B36E18                          PNG image, total size: 1989 bytes
+45315552                           0x2B375E0                          PNG image, total size: 2317 bytes
+45317872                           0x2B37EF0                          PNG image, total size: 1972 bytes
+45319848                           0x2B386A8                          PNG image, total size: 1989 bytes
+45321840                           0x2B38E70                          PNG image, total size: 2325 bytes
+45324168                           0x2B39788                          PNG image, total size: 1837 bytes
+45326008                           0x2B39EB8                          PNG image, total size: 1863 bytes
+45327872                           0x2B3A600                          PNG image, total size: 2168 bytes
+45330040                           0x2B3AE78                          PNG image, total size: 1977 bytes
+45332024                           0x2B3B638                          PNG image, total size: 1992 bytes
+45334016                           0x2B3BE00                          PNG image, total size: 2321 bytes
+45336344                           0x2B3C718                          PNG image, total size: 1981 bytes
+45338328                           0x2B3CED8                          PNG image, total size: 1998 bytes
+45340328                           0x2B3D6A8                          PNG image, total size: 2321 bytes
+45342656                           0x2B3DFC0                          PNG image, total size: 1831 bytes
+45344488                           0x2B3E6E8                          PNG image, total size: 1851 bytes
+45346344                           0x2B3EE28                          PNG image, total size: 2156 bytes
+45348504                           0x2B3F698                          PNG image, total size: 1975 bytes
+45350480                           0x2B3FE50                          PNG image, total size: 1994 bytes
+45352480                           0x2B40620                          PNG image, total size: 2301 bytes
+45354784                           0x2B40F20                          PNG image, total size: 3169 bytes
+45357960                           0x2B41B88                          PNG image, total size: 3176 bytes
+45361136                           0x2B427F0                          PNG image, total size: 3215 bytes
+45364352                           0x2B43480                          PNG image, total size: 3215 bytes
+45367568                           0x2B44110                          PNG image, total size: 3222 bytes
+45370792                           0x2B44DA8                          PNG image, total size: 3169 bytes
+45373968                           0x2B45A10                          PNG image, total size: 3217 bytes
+45377192                           0x2B466A8                          PNG image, total size: 3226 bytes
+45380424                           0x2B47348                          PNG image, total size: 3252 bytes
+45383680                           0x2B48000                          PNG image, total size: 3252 bytes
+45386936                           0x2B48CB8                          PNG image, total size: 3255 bytes
+45390192                           0x2B49970                          PNG image, total size: 3217 bytes
+45393416                           0x2B4A608                          PNG image, total size: 3222 bytes
+45396640                           0x2B4B2A0                          PNG image, total size: 3237 bytes
+45399880                           0x2B4BF48                          PNG image, total size: 3259 bytes
+45403144                           0x2B4CC08                          PNG image, total size: 3259 bytes
+45406408                           0x2B4D8C8                          PNG image, total size: 3279 bytes
+45409688                           0x2B4E598                          PNG image, total size: 3222 bytes
+45412912                           0x2B4F230                          PNG image, total size: 3182 bytes
+45416096                           0x2B4FEA0                          PNG image, total size: 3186 bytes
+45419288                           0x2B50B18                          PNG image, total size: 3230 bytes
+45422520                           0x2B517B8                          PNG image, total size: 3230 bytes
+45425752                           0x2B52458                          PNG image, total size: 3229 bytes
+45428984                           0x2B530F8                          PNG image, total size: 3182 bytes
+45432168                           0x2B53D68                          PNG image, total size: 3182 bytes
+45435352                           0x2B549D8                          PNG image, total size: 3186 bytes
+45438544                           0x2B55650                          PNG image, total size: 3230 bytes
+45441776                           0x2B562F0                          PNG image, total size: 3230 bytes
+45445008                           0x2B56F90                          PNG image, total size: 3229 bytes
+45448240                           0x2B57C30                          PNG image, total size: 3182 bytes
+45451424                           0x2B588A0                          PNG image, total size: 3196 bytes
+45454624                           0x2B59520                          PNG image, total size: 3202 bytes
+45457832                           0x2B5A1A8                          PNG image, total size: 3239 bytes
+45461072                           0x2B5AE50                          PNG image, total size: 3239 bytes
+45464312                           0x2B5BAF8                          PNG image, total size: 3242 bytes
+45467560                           0x2B5C7A8                          PNG image, total size: 3196 bytes
+45470760                           0x2B5D428                          PNG image, total size: 3207 bytes
+45473968                           0x2B5E0B0                          PNG image, total size: 3212 bytes
+45477184                           0x2B5ED40                          PNG image, total size: 3247 bytes
+45480432                           0x2B5F9F0                          PNG image, total size: 3247 bytes
+45483680                           0x2B606A0                          PNG image, total size: 3246 bytes
+45486928                           0x2B61350                          PNG image, total size: 3207 bytes
+45490136                           0x2B61FD8                          PNG image, total size: 3169 bytes
+45493312                           0x2B62C40                          PNG image, total size: 3175 bytes
+45496488                           0x2B638A8                          PNG image, total size: 3208 bytes
+45499696                           0x2B64530                          PNG image, total size: 3208 bytes
+45502904                           0x2B651B8                          PNG image, total size: 3221 bytes
+45506128                           0x2B65E50                          PNG image, total size: 3169 bytes
+45509304                           0x2B66AB8                          PNG image, total size: 3169 bytes
+45512480                           0x2B67720                          PNG image, total size: 3175 bytes
+45515656                           0x2B68388                          PNG image, total size: 3208 bytes
+45518864                           0x2B69010                          PNG image, total size: 3208 bytes
+45522072                           0x2B69C98                          PNG image, total size: 3221 bytes
+45525296                           0x2B6A930                          PNG image, total size: 3169 bytes
+45528472                           0x2B6B598                          PNG image, total size: 3182 bytes
+45531656                           0x2B6C208                          PNG image, total size: 3186 bytes
+45534848                           0x2B6CE80                          PNG image, total size: 3230 bytes
+45538080                           0x2B6DB20                          PNG image, total size: 3230 bytes
+45541312                           0x2B6E7C0                          PNG image, total size: 3229 bytes
+45544544                           0x2B6F460                          PNG image, total size: 3182 bytes
+45547728                           0x2B700D0                          PNG image, total size: 3169 bytes
+45550904                           0x2B70D38                          PNG image, total size: 3175 bytes
+45554080                           0x2B719A0                          PNG image, total size: 3208 bytes
+45557288                           0x2B72628                          PNG image, total size: 3208 bytes
+45560496                           0x2B732B0                          PNG image, total size: 3221 bytes
+45563720                           0x2B73F48                          PNG image, total size: 3169 bytes
+45566896                           0x2B74BB0                          PNG image, total size: 1382 bytes
+45568280                           0x2B75118                          PNG image, total size: 1407 bytes
+45569688                           0x2B75698                          PNG image, total size: 1338 bytes
+45571032                           0x2B75BD8                          PNG image, total size: 1338 bytes
+45572376                           0x2B76118                          PNG image, total size: 1514 bytes
+45573896                           0x2B76708                          PNG image, total size: 1382 bytes
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+[+] Extraction of png data at offset 0x2A16800 completed successfully
+[+] Extraction of png data at offset 0x2A17198 completed successfully
+[+] Extraction of png data at offset 0x2A17B48 completed successfully
+[+] Extraction of png data at offset 0x2A18640 completed successfully
+[+] Extraction of png data at offset 0x2A19060 completed successfully
+[+] Extraction of png data at offset 0x2A19AA8 completed successfully
+[+] Extraction of png data at offset 0x2A1A620 completed successfully
+[+] Extraction of png data at offset 0x2A1B078 completed successfully
+[+] Extraction of png data at offset 0x2A1BAE8 completed successfully
+[+] Extraction of png data at offset 0x2A1C688 completed successfully
+[+] Extraction of png data at offset 0x2A20440 completed successfully
+[+] Extraction of png data at offset 0x2A24028 completed successfully
+[+] Extraction of png data at offset 0x2A27EA0 completed successfully
+[+] Extraction of png data at offset 0x2A2C310 completed successfully
+[+] Extraction of png data at offset 0x2A2FEC8 completed successfully
+[+] Extraction of png data at offset 0x2A33CE8 completed successfully
+[+] Extraction of png data at offset 0x2A38128 completed successfully
+[+] Extraction of png data at offset 0x2A3BD78 completed successfully
+[+] Extraction of png data at offset 0x2A3FC50 completed successfully
+[+] Extraction of png data at offset 0x2A440D0 completed successfully
+[+] Extraction of png data at offset 0x2A4A868 completed successfully
+[+] Extraction of png data at offset 0x2A51648 completed successfully
+[+] Extraction of png data at offset 0x2A591A8 completed successfully
+[+] Extraction of png data at offset 0x2A5CDF8 completed successfully
+[+] Extraction of png data at offset 0x2A60CC8 completed successfully
+[+] Extraction of png data at offset 0x2A65138 completed successfully
+[+] Extraction of png data at offset 0x2A68CD8 completed successfully
+[+] Extraction of png data at offset 0x2A6CB88 completed successfully
+[+] Extraction of png data at offset 0x2A711C8 completed successfully
+[+] Extraction of png data at offset 0x2A7A8A8 completed successfully
+[+] Extraction of png data at offset 0x2A84870 completed successfully
+[+] Extraction of png data at offset 0x2A8FBB8 completed successfully
+[+] Extraction of png data at offset 0x2A93750 completed successfully
+[+] Extraction of png data at offset 0x2A97600 completed successfully
+[+] Extraction of png data at offset 0x2A9BC40 completed successfully
+[+] Extraction of png data at offset 0x2A9EFB8 completed successfully
+[+] Extraction of png data at offset 0x2AA23A8 completed successfully
+[+] Extraction of png data at offset 0x2AA5B80 completed successfully
+[+] Extraction of png data at offset 0x2AA9868 completed successfully
+[+] Extraction of png data at offset 0x2AAD7D0 completed successfully
+[+] Extraction of png data at offset 0x2AB1CF0 completed successfully
+[+] Extraction of png data at offset 0x2AB59B8 completed successfully
+[+] Extraction of png data at offset 0x2AB98C8 completed successfully
+[+] Extraction of png data at offset 0x2ABDDD0 completed successfully
+[+] Extraction of png data at offset 0x2AC1AD8 completed successfully
+[+] Extraction of png data at offset 0x2AC5A70 completed successfully
+[+] Extraction of png data at offset 0x2AC9F70 completed successfully
+[+] Extraction of png data at offset 0x2AD0940 completed successfully
+[+] Extraction of png data at offset 0x2AD7958 completed successfully
+[+] Extraction of png data at offset 0x2ADF660 completed successfully
+[+] Extraction of png data at offset 0x2AE3368 completed successfully
+[+] Extraction of png data at offset 0x2AE72F0 completed successfully
+[+] Extraction of png data at offset 0x2AEB7E8 completed successfully
+[+] Extraction of png data at offset 0x2AF51D0 completed successfully
+[+] Extraction of png data at offset 0x2AFF468 completed successfully
+[+] Extraction of png data at offset 0x2B0A978 completed successfully
+[+] Extraction of png data at offset 0x2B0DC20 completed successfully
+[+] Extraction of png data at offset 0x2B10E38 completed successfully
+[+] Extraction of png data at offset 0x2B144A8 completed successfully
+[+] Extraction of png data at offset 0x2B17340 completed successfully
+[+] Extraction of png data at offset 0x2B1A2B8 completed successfully
+[+] Extraction of png data at offset 0x2B1D6A0 completed successfully
+[+] Extraction of png data at offset 0x2B20578 completed successfully
+[+] Extraction of png data at offset 0x2B23520 completed successfully
+[+] Extraction of png data at offset 0x2B26900 completed successfully
+[+] Extraction of png data at offset 0x2B28A68 completed successfully
+[+] Extraction of png data at offset 0x2B2B3F0 completed successfully
+[+] Extraction of png data at offset 0x2B2DCC8 completed successfully
+[+] Extraction of png data at offset 0x2B2FDE8 completed successfully
+[+] Extraction of png data at offset 0x2B32708 completed successfully
+[+] Extraction of png data at offset 0x2B34F80 completed successfully
+[+] Extraction of png data at offset 0x2B356B0 completed successfully
+[+] Extraction of png data at offset 0x2B35DF8 completed successfully
+[+] Extraction of png data at offset 0x2B36668 completed successfully
+[+] Extraction of png data at offset 0x2B36E18 completed successfully
+[+] Extraction of png data at offset 0x2B375E0 completed successfully
+[+] Extraction of png data at offset 0x2B37EF0 completed successfully
+[+] Extraction of png data at offset 0x2B386A8 completed successfully
+[+] Extraction of png data at offset 0x2B38E70 completed successfully
+[+] Extraction of png data at offset 0x2B39788 completed successfully
+[+] Extraction of png data at offset 0x2B39EB8 completed successfully
+[+] Extraction of png data at offset 0x2B3A600 completed successfully
+[+] Extraction of png data at offset 0x2B3AE78 completed successfully
+[+] Extraction of png data at offset 0x2B3B638 completed successfully
+[+] Extraction of png data at offset 0x2B3BE00 completed successfully
+[+] Extraction of png data at offset 0x2B3C718 completed successfully
+[+] Extraction of png data at offset 0x2B3CED8 completed successfully
+[+] Extraction of png data at offset 0x2B3D6A8 completed successfully
+[+] Extraction of png data at offset 0x2B3DFC0 completed successfully
+[+] Extraction of png data at offset 0x2B3E6E8 completed successfully
+[+] Extraction of png data at offset 0x2B3EE28 completed successfully
+[+] Extraction of png data at offset 0x2B3F698 completed successfully
+[+] Extraction of png data at offset 0x2B3FE50 completed successfully
+[+] Extraction of png data at offset 0x2B40620 completed successfully
+[+] Extraction of png data at offset 0x2B40F20 completed successfully
+[+] Extraction of png data at offset 0x2B41B88 completed successfully
+[+] Extraction of png data at offset 0x2B427F0 completed successfully
+[+] Extraction of png data at offset 0x2B43480 completed successfully
+[+] Extraction of png data at offset 0x2B44110 completed successfully
+[+] Extraction of png data at offset 0x2B44DA8 completed successfully
+[+] Extraction of png data at offset 0x2B45A10 completed successfully
+[+] Extraction of png data at offset 0x2B466A8 completed successfully
+[+] Extraction of png data at offset 0x2B47348 completed successfully
+[+] Extraction of png data at offset 0x2B48000 completed successfully
+[+] Extraction of png data at offset 0x2B48CB8 completed successfully
+[+] Extraction of png data at offset 0x2B49970 completed successfully
+[+] Extraction of png data at offset 0x2B4A608 completed successfully
+[+] Extraction of png data at offset 0x2B4B2A0 completed successfully
+[+] Extraction of png data at offset 0x2B4BF48 completed successfully
+[+] Extraction of png data at offset 0x2B4CC08 completed successfully
+[+] Extraction of png data at offset 0x2B4D8C8 completed successfully
+[+] Extraction of png data at offset 0x2B4E598 completed successfully
+[+] Extraction of png data at offset 0x2B4F230 completed successfully
+[+] Extraction of png data at offset 0x2B4FEA0 completed successfully
+[+] Extraction of png data at offset 0x2B50B18 completed successfully
+[+] Extraction of png data at offset 0x2B517B8 completed successfully
+[+] Extraction of png data at offset 0x2B52458 completed successfully
+[+] Extraction of png data at offset 0x2B530F8 completed successfully
+[+] Extraction of png data at offset 0x2B53D68 completed successfully
+[+] Extraction of png data at offset 0x2B549D8 completed successfully
+[+] Extraction of png data at offset 0x2B55650 completed successfully
+[+] Extraction of png data at offset 0x2B562F0 completed successfully
+[+] Extraction of png data at offset 0x2B56F90 completed successfully
+[+] Extraction of png data at offset 0x2B57C30 completed successfully
+[+] Extraction of png data at offset 0x2B588A0 completed successfully
+[+] Extraction of png data at offset 0x2B59520 completed successfully
+[+] Extraction of png data at offset 0x2B5A1A8 completed successfully
+[+] Extraction of png data at offset 0x2B5AE50 completed successfully
+[+] Extraction of png data at offset 0x2B5BAF8 completed successfully
+[+] Extraction of png data at offset 0x2B5C7A8 completed successfully
+[+] Extraction of png data at offset 0x2B5D428 completed successfully
+[+] Extraction of png data at offset 0x2B5E0B0 completed successfully
+[+] Extraction of png data at offset 0x2B5ED40 completed successfully
+[+] Extraction of png data at offset 0x2B5F9F0 completed successfully
+[+] Extraction of png data at offset 0x2B606A0 completed successfully
+[+] Extraction of png data at offset 0x2B61350 completed successfully
+[+] Extraction of png data at offset 0x2B61FD8 completed successfully
+[+] Extraction of png data at offset 0x2B62C40 completed successfully
+[+] Extraction of png data at offset 0x2B638A8 completed successfully
+[+] Extraction of png data at offset 0x2B64530 completed successfully
+[+] Extraction of png data at offset 0x2B651B8 completed successfully
+[+] Extraction of png data at offset 0x2B65E50 completed successfully
+[+] Extraction of png data at offset 0x2B66AB8 completed successfully
+[+] Extraction of png data at offset 0x2B67720 completed successfully
+[+] Extraction of png data at offset 0x2B68388 completed successfully
+[+] Extraction of png data at offset 0x2B69010 completed successfully
+[+] Extraction of png data at offset 0x2B69C98 completed successfully
+[+] Extraction of png data at offset 0x2B6A930 completed successfully
+[+] Extraction of png data at offset 0x2B6B598 completed successfully
+[+] Extraction of png data at offset 0x2B6C208 completed successfully
+[+] Extraction of png data at offset 0x2B6CE80 completed successfully
+[+] Extraction of png data at offset 0x2B6DB20 completed successfully
+[+] Extraction of png data at offset 0x2B6E7C0 completed successfully
+[+] Extraction of png data at offset 0x2B6F460 completed successfully
+[+] Extraction of png data at offset 0x2B700D0 completed successfully
+[+] Extraction of png data at offset 0x2B70D38 completed successfully
+[+] Extraction of png data at offset 0x2B719A0 completed successfully
+[+] Extraction of png data at offset 0x2B72628 completed successfully
+[+] Extraction of png data at offset 0x2B732B0 completed successfully
+[+] Extraction of png data at offset 0x2B73F48 completed successfully
+[+] Extraction of png data at offset 0x2B74BB0 completed successfully
+[+] Extraction of png data at offset 0x2B75118 completed successfully
+[+] Extraction of png data at offset 0x2B75698 completed successfully
+[+] Extraction of png data at offset 0x2B75BD8 completed successfully
+[+] Extraction of png data at offset 0x2B76118 completed successfully
+[+] Extraction of png data at offset 0x2B76708 completed successfully
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Analyzed 1 file for 85 file signatures (187 magic patterns) in 218.0 milliseconds

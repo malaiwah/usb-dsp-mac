@@ -50,6 +50,17 @@ macos_hid_diag/try_alt_report_types
 # Skip the extracted Windows installer tree (the .zip itself is kept).
 downloads/DSP-408-Windows/
 
+# Unrelated large reference zip (SPA250 is a different product, 185 MB) —
+# keep locally for reference but never push to origin.
+downloads/SPA250DSP.zip
+
+# Binwalk-extracted .exe contents — regenerate with
+# `binwalk -e -C extracted DSP-408.exe` from macos_hid_diag/exe_analysis/.
+macos_hid_diag/exe_analysis/extracted/
+# False-positive "embedded firmware" from an early analysis step — kept
+# the produce-it script (find_payload.py) instead.
+macos_hid_diag/exe_analysis/embedded_firmware.bin
+
 # ── Nested third-party project (clone separately if needed) ───────────────
 dsp-408-ui/
 

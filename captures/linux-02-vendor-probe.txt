@@ -1,0 +1,63 @@
+Capture: linux-02-vendor-probe.pcapng
+Interface: usbmon1 (Raspberry Pi, bus 1)
+Device:    VID 0x0483 / PID 0x5750, sysfs path 1-1.5
+Script:    captures/probe.py (run via /tmp/_pi_run_captures.sh as root)
+Date:      2026-04-18
+
+What was done:
+  1. Started dumpcap on usbmon1.
+  2. Ran probe.py which opens the HID device via python3-hid (legacy API)
+     and writes 20 WMCU-framed "get" commands (cmd = 0x01..0x0F, 0x10,
+     0x20, 0x40, 0x80, 0xA0) 400 ms apart, each a 64-byte INTERRUPT OUT
+     transfer on endpoint 0x01.
+  3. After each write, probe.py drained the INTERRUPT IN pipe for 250 ms
+     using hid.device.read(64, 250).
+  4. Stopped the capture.
+
+What the capture contains:
+  * 106 frames total, ~14 s duration.
+  * Frames 1-42: enumeration + string descriptor fetches triggered by
+    hid.device.open().
+  * Frame 43: first INTERRUPT IN URB submitted on EP 0x82 (t=1.098 s).
+  * Frames 62-105: 20 INTERRUPT OUT submissions on EP 0x01, each 64
+    bytes. Every one has the correct WMCU framing and checksum
+    (verified by captures/analyze_capture.py).
+  * Frames 78, 96, 106: three INTERRUPT IN URB completions — ALL with
+    urb_len=0 and data_len=0. No data ever came back.
+
+Critical finding:
+  * Interrupt-IN completions with data  = 0  (zero bytes from device)
+  * Interrupt-OUT submissions succeeded = 20 (all ACKed at URB level)
+  * STALL / NAK-storm indicators         = 0
+
+Interpretation:
+  The device CLEANLY ACCEPTS all 20 WMCU-framed OUT frames and then
+  SILENTLY DROPS them. Combined with the linux-01 capture, this rules
+  out the hypothesis that "macOS was filtering replies the device was
+  sending": the device is not generating replies in the first place.
+
+Hypotheses that remain open:
+  a) The WMCU frame layout (0x10 0x02 0x00 0x01 N CMD 0x10 0x03 CHK) is
+     wrong — perhaps the device only responds to a different envelope.
+  b) The framing is right but the command bytes (0x01..0xA0) we tried
+     are not implemented handlers; the firmware discards unknown CMDs.
+  c) Commands must be delivered via HID SET_REPORT (control transfer),
+     not interrupt OUT. — Partially refuted by linux-02b-setreport: the
+     device's Report Descriptor declares no Feature Report, and
+     hidapi's send_feature_report returned -1.
+  d) The firmware has a handshake/unlock sequence we haven't seen yet
+     (eg. a SET_INTERFACE or HID Class-Specific request before it will
+     accept vendor commands).
+
+Next-highest-value experiment:
+  Capture the Windows V1.24 GUI (DSP-408.exe) talking to this device via
+  USBPcap. The resulting pcap will show EXACTLY what framing the device
+  responds to, because we know every byte the .exe writes to the device
+  and every byte that comes back becomes visible in usbmon-equivalent
+  form. This unlocks hypotheses (a), (b), (d) in one experiment.
+
+Files for diff reference:
+  * probe.py OUT frame for cmd 0x05:
+      10 02 00 01 01 05 10 03 04  (padded to 64)
+  * probe.py OUT frame for cmd 0x01:
+      10 02 00 01 01 01 10 03 00  (chk = 1 XOR 1 = 0)

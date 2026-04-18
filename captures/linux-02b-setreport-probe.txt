@@ -1,0 +1,28 @@
+Capture: linux-02b-setreport-probe.pcapng
+Interface: usbmon1 (Raspberry Pi, bus 1)
+Date:      2026-04-18
+
+What was done:
+  Follow-up to linux-02-vendor-probe.pcapng. Tried alternate delivery
+  paths for the same WMCU-framed CMD=0x05 in case the device only
+  accepts commands via HID control-transfer SET_REPORT.
+
+Paths tried:
+  1. INTERRUPT OUT (hid.write) — same as linux-02 probe, no response.
+  2. SET_REPORT(OUTPUT) via control transfer — skipped; legacy
+     cython-hidapi in python3-hid only exposes SET_REPORT(FEATURE).
+  3. SET_REPORT(FEATURE) via hid.device.send_feature_report —
+     returned -1 (HID stack reported no feature reports are declared
+     in the report descriptor; see linux-01 HID RD dump).
+  4. GET_REPORT(INPUT) — method not available on legacy hidapi.
+  5. GET_REPORT(FEATURE) — raised "read error" (same root cause as #3:
+     no feature report declared).
+
+Finding:
+  Neither SET_REPORT nor GET_REPORT is a viable command transport on
+  this device because its HID Report Descriptor does not declare any
+  Feature Report. That leaves INTERRUPT OUT as the only command path,
+  which we've now probed with 20 cmd bytes without any reply.
+
+Next step: a Windows USBPcap trace of the V1.24 GUI is the only
+unambiguous way to learn the working command framing.
