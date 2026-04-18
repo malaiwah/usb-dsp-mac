@@ -1,0 +1,58 @@
+# dsp408-mqtt.service — run the DSP-408 → Home Assistant MQTT bridge
+# as a long-lived system service.
+#
+# Install (as root):
+#     cp packaging/systemd/dsp408-mqtt.service /etc/systemd/system/
+#     cp packaging/systemd/dsp408-mqtt.env.example /etc/default/dsp408-mqtt
+#     $EDITOR /etc/default/dsp408-mqtt     # set DSP408_BIN and DSP408_ARGS
+#     systemctl daemon-reload
+#     systemctl enable --now dsp408-mqtt
+#
+# Inspect:
+#     systemctl status dsp408-mqtt
+#     journalctl -u dsp408-mqtt -f
+#
+# The bridge catches SIGTERM and publishes `offline` on every
+# availability topic before disconnecting, so stopping or restarting
+# this unit flips every DSP-408 entity to "unavailable" in HA cleanly.
+
+[Unit]
+Description=DSP-408 Home Assistant MQTT bridge
+Documentation=https://github.com/malaiwah/dsp408-py
+# MQTT + HA auto-discovery both want the network genuinely up.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Run as the same user who owns the project checkout + venv, and is
+# in the `plugdev` group so the udev rules in README.md grant USB
+# access to /dev/hidraw* and the 0483:5750 USB device.
+User=pi
+Group=plugdev
+SupplementaryGroups=dialout
+
+# Concrete values live in /etc/default/dsp408-mqtt (leading `-` means
+# "missing file is fine" — the defaults below still apply).
+Environment=DSP408_BIN=/usr/local/bin/dsp408
+Environment=DSP408_ARGS=--broker 127.0.0.1
+EnvironmentFile=-/etc/default/dsp408-mqtt
+
+ExecStart=${DSP408_BIN} mqtt ${DSP408_ARGS}
+
+# Clean shutdown: bridge handles SIGTERM and publishes offline LWTs
+# before disconnecting. Give it up to 10s.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# USB hiccups or broker blips should not kill the service.
+Restart=on-failure
+RestartSec=5
+
+# Light process hygiene (does not break USB / venv access).
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

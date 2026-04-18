@@ -185,6 +185,33 @@ The bridge re-enumerates hot-plugged devices every ~1 second, so
 plugging or unplugging a DSP-408 while the bridge is running spawns
 or reaps the matching worker thread without a restart.
 
+### Running the bridge as a systemd service
+
+A ready-to-go unit lives at `packaging/systemd/dsp408-mqtt.service`,
+paired with `dsp408-mqtt.env.example` for host-specific config
+(broker address, credentials, aliases path). Install it once:
+
+```bash
+sudo cp packaging/systemd/dsp408-mqtt.service /etc/systemd/system/
+sudo cp packaging/systemd/dsp408-mqtt.env.example /etc/default/dsp408-mqtt
+sudoedit /etc/default/dsp408-mqtt        # set DSP408_BIN + DSP408_ARGS
+sudo systemctl daemon-reload
+sudo systemctl enable --now dsp408-mqtt
+```
+
+Inspect:
+
+```bash
+systemctl status dsp408-mqtt
+journalctl -u dsp408-mqtt -f
+```
+
+`Restart=on-failure` auto-recovers from USB or broker blips,
+`KillSignal=SIGTERM`+`TimeoutStopSec=10` gives the bridge a chance to
+publish `offline` on every availability topic before exit — so
+`systemctl restart dsp408-mqtt` flips the devices to unavailable in
+HA cleanly rather than leaving stale state.
+
 ## Library
 
 ```python
