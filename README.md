@@ -58,6 +58,40 @@ Reload udev after editing:
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
+## Device aliases
+
+When you have more than one DSP-408 plugged into the same host, the
+default `display_id` (serial if present, otherwise a `dsp408-<hash>`
+derived from the USB path) is stable but unfriendly. Drop a small TOML
+file to give each unit a human name:
+
+```toml
+# ~/.config/dsp408/aliases.toml
+[aliases]
+"4EAA4B964C00"    = "Living Room Subs"
+"dsp408-cf594b63" = "Garage Amp"
+```
+
+Keys are matched against (in order) the device's `serial_number`,
+`display_id`, or stringified hidapi path — so `dsp408 list` tells you
+exactly what string to use. Friendly names then surface everywhere:
+
+* `dsp408 list` shows them in a dedicated column.
+* `dsp408 --device "Living Room Subs" info` — selectors match friendly
+  names just like index / serial / path.
+* The Gradio dropdown labels entries `[N] Living Room Subs · 4EAA4B964C00`.
+* Home Assistant discovery uses the alias as the MQTT device name, so
+  the card in HA says "Living Room Subs" instead of "DSP-408 (4EAA…)".
+
+Search order (later wins, so user config overrides system-wide):
+
+1. `/etc/dsp408/aliases.toml`
+2. `$XDG_CONFIG_HOME/dsp408/aliases.toml` (default `~/.config/dsp408/aliases.toml`)
+3. `./dsp408-aliases.toml` (working directory)
+
+Or pass `--aliases PATH` to any `dsp408` subcommand to load a single
+file explicitly and skip the search.
+
 ## CLI
 
 ```bash
@@ -65,6 +99,8 @@ uv run dsp408 list                      # enumerate every DSP-408
 uv run dsp408 info                      # first device
 uv run dsp408 --device 1 info           # second device (by index)
 uv run dsp408 --device MYDW-AV1234 info # select by serial
+uv run dsp408 --device "Garage Amp" info  # select by alias (see below)
+uv run dsp408 --aliases ./my.toml list    # use an explicit aliases file
 uv run dsp408 snapshot                  # full startup handshake dump
 uv run dsp408 read 0x04                 # raw read by cmd code
 uv run dsp408 read-channel 0            # 296-byte channel-state blob
@@ -188,7 +224,8 @@ uv run pytest -q          # verifies frame builder against on-the-wire bytes
 ```
 
 Tests cover frame round-trips against literal capture bytes (15),
-multi-device enumeration logic (11), and MQTT discovery shape (6).
+multi-device enumeration logic (11), MQTT discovery shape + paho
+v1/v2 compatibility (9), and device-alias loading / lookup (13).
 No real USB or broker required.
 
 ## Reverse-engineering history

@@ -30,6 +30,11 @@ Device specs (from the manual):
   * Master volume + per-channel mute + per-channel phase invert
 """
 
+from .config import (
+    default_search_paths,
+    friendly_name_for,
+    load_aliases,
+)
 from .device import (
     Device,
     DeviceInfo,
@@ -70,6 +75,9 @@ __all__ = [
     "ProtocolError",
     "enumerate_devices",
     "resolve_selector",
+    "load_aliases",
+    "friendly_name_for",
+    "default_search_paths",
 ]
 
 __version__ = "0.1.0"

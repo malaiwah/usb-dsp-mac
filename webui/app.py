@@ -197,11 +197,22 @@ SESSION = DeviceSession()
 
 # ── Device-picker helpers ──────────────────────────────────────────────
 def _picker_choices() -> list[str]:
-    """Return the labels shown in the device dropdown."""
+    """Return the labels shown in the device dropdown.
+
+    Label format: `[<index>] <friendly_or_display_id>[ · <display_id>]`
+    When an alias is configured, the friendly name leads and the stable
+    display_id is shown after a separator so the user can still see the
+    machine id. The parser in `_label_to_selector` picks the string
+    between `]` and ` · ` — which is either the friendly name (passed
+    to `resolve_selector` → matches on friendly_name) or the display_id.
+    """
     out = []
     for d in enumerate_devices():
-        label = f"[{d['index']}] {d['display_id']}"
-        if d.get("product_string") and d["product_string"] != d["display_id"]:
+        name = d.get("friendly_name") or d["display_id"]
+        label = f"[{d['index']}] {name}"
+        if name != d["display_id"]:
+            label += f" · {d['display_id']}"
+        elif d.get("product_string") and d["product_string"] != d["display_id"]:
             label += f" · {d['product_string']}"
         out.append(label)
     return out
@@ -209,7 +220,7 @@ def _picker_choices() -> list[str]:
 
 def _label_to_selector(label: str) -> str | None:
     """Convert a dropdown label back to the stable selector string."""
-    # Format: "[<index>] <display_id>[ · product]"
+    # Format: "[<index>] <name>[ · <tail>]"
     if not label:
         return None
     rest = label.split("]", 1)

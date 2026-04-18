@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 from . import Device, DeviceNotFound, ProtocolError, resolve_selector
+from .config import load_aliases
 from .flasher import flash_firmware
 from .protocol import category_hint
 
@@ -43,19 +44,47 @@ def _p(label: str, value) -> None:
     print(f"  {label:<16} {value}")
 
 
+def _aliases_from_args(args) -> dict[str, str]:
+    """Resolve the alias map from the global `--aliases PATH` flag
+    (explicit file) or the default search paths (config)."""
+    path = getattr(args, "aliases", None)
+    if path:
+        return load_aliases(Path(path))
+    return load_aliases()
+
+
 def _open_device(args) -> Device:
     """Open the device selected by the global `--device` flag."""
     sel: str | None = getattr(args, "device", None)
-    return Device.open(selector=sel)
+    aliases = _aliases_from_args(args)
+    # enumerate_devices() already applies aliases; Device.open() picks
+    # through those. We pass the aliases via a fresh enumerate so that
+    # Device.open(selector=<friendly name>) resolves correctly.
+    from .device import enumerate_devices
+    from .device import resolve_selector as _rs
+    devs = enumerate_devices(aliases=aliases)
+    if getattr(args, "device", None) is None:
+        chosen = _rs(None, devs) if devs else None
+    else:
+        chosen = _rs(sel, devs)
+    if chosen is None:
+        raise DeviceNotFound("No DSP-408 attached")
+    return Device.open(path=chosen["path"])
 
 
-def cmd_list(_args) -> int:
-    devs = Device.enumerate()
+def cmd_list(args) -> int:
+    from .device import enumerate_devices
+    aliases = _aliases_from_args(args)
+    devs = enumerate_devices(aliases=aliases)
     if not devs:
         print("(no DSP-408 found)")
         return 1
     for d in devs:
-        print(f"[{d['index']}] {d['display_id']}")
+        fname = d.get("friendly_name") or d["display_id"]
+        if fname != d["display_id"]:
+            print(f"[{d['index']}] {fname}  ({d['display_id']})")
+        else:
+            print(f"[{d['index']}] {d['display_id']}")
         _p("vendor", hex(d["vid"]))
         _p("product", hex(d["pid"]))
         _p("serial", d.get("serial_number", ""))
@@ -63,6 +92,8 @@ def cmd_list(_args) -> int:
         _p("manufacturer", d.get("manufacturer", ""))
         _p("path", d["path"].decode("utf-8", errors="replace"))
     print(f"\n{len(devs)} DSP-408 device(s) found.")
+    if aliases:
+        print(f"(aliases loaded: {len(aliases)})")
     return 0
 
 
@@ -71,7 +102,11 @@ def cmd_info(args) -> int:
         status = dev.connect()
         identity = dev.get_info()
         preset = dev.read_preset_name()
-        print(f"Device:         {dev.display_id}")
+        label = dev.friendly_name
+        if label != dev.display_id:
+            print(f"Device:         {label}  ({dev.display_id})")
+        else:
+            print(f"Device:         {dev.display_id}")
         print(f"CONNECT status: 0x{status:02x}")
         print(f"GET_INFO:       {identity!r}")
         print(f"Preset name:    {preset!r}")
@@ -207,7 +242,28 @@ def cmd_mqtt(args) -> int:
         discovery_prefix=args.discovery_prefix,
         poll_interval=float(args.poll_interval),
         selector=args.device,
+        aliases=_aliases_from_args(args),
     )
+
+    # Clean shutdown on SIGTERM (systemd, `kill PID`, container stop) and
+    # SIGHUP. Without this, the process dies mid-run and libusb never
+    # releases the USB interface — the kernel `usbhid` driver doesn't
+    # re-attach, `/dev/hidraw0` disappears, and nothing can open the
+    # device until the bridge is forcibly killed AND the next process
+    # starts (or the device is unplugged). Caught live on a Pi.
+    import signal
+
+    def _shutdown(signum, _frame):
+        print(f"\nreceived signal {signum}, stopping...", file=sys.stderr)
+        bridge.stop()
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _shutdown)
+        except (OSError, ValueError):
+            # Not supported on Windows / not main thread
+            pass
+
     try:
         bridge.run()
     except KeyboardInterrupt:
@@ -222,7 +278,13 @@ def main(argv: list[str] | None = None) -> int:
         "--device",
         default=None,
         metavar="SEL",
-        help="device selector: index, serial, display_id, or hidraw path",
+        help="device selector: index, serial, display_id, friendly name, or hidraw path",
+    )
+    ap.add_argument(
+        "--aliases",
+        default=None,
+        metavar="PATH",
+        help="explicit device-aliases TOML (default: ~/.config/dsp408/aliases.toml)",
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
 

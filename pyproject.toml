@@ -12,6 +12,9 @@ keywords = ["dsp", "dsp-408", "dayton-audio", "usb-hid", "reverse-engineering"]
 # required for `webui.app`. Both install cleanly on Linux (Pi) and macOS.
 dependencies = [
     "hidapi>=0.14",
+    # TOML parser for the aliases config file. stdlib `tomllib` is 3.11+;
+    # fall back to the widely-used `tomli` on 3.10.
+    "tomli>=2.0 ; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]

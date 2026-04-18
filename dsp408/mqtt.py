@@ -98,6 +98,7 @@ class BridgeConfig:
     discovery_prefix: str = "homeassistant"
     poll_interval: float = 2.0
     selector: str | None = None  # None = all devices; str/int = just one
+    aliases: dict[str, str] | None = None  # device-id → friendly name
 
 
 def bridge_status_topic(base_topic: str) -> str:
@@ -173,11 +174,20 @@ class DeviceWorker:
         serial = self._info.get("serial_number") or self._info["display_id"]
         product = self._info.get("product_string") or "DSP-408"
         manufacturer = self._info.get("manufacturer") or "Dayton Audio"
+        # Prefer the user's friendly name (from ~/.config/dsp408/aliases.toml)
+        # when available; fall back to the machine-generated display_id.
+        display = (self._info.get("friendly_name")
+                   or self._info.get("display_id")
+                   or "DSP-408")
+        is_aliased = display != self._info.get("display_id")
 
         dev = {
             # HA abbreviations:
             "ids": [f"dsp408_{self.slug}"],
-            "name": f"DSP-408 ({self._info['display_id']})",
+            # If the user gave the device a friendly name, show just that
+            # (cleaner in HA). Otherwise, fall back to the old
+            # "DSP-408 (<display_id>)" format for disambiguation.
+            "name": display if is_aliased else f"DSP-408 ({display})",
             "mf": manufacturer,
             "mdl": product,
             "sn": serial,
@@ -475,6 +485,7 @@ class MqttBridge:
         discovery_prefix: str = "homeassistant",
         poll_interval: float = 2.0,
         selector: str | None = None,
+        aliases: dict[str, str] | None = None,
     ):
         self.cfg = BridgeConfig(
             broker=broker,
@@ -485,6 +496,7 @@ class MqttBridge:
             discovery_prefix=discovery_prefix,
             poll_interval=poll_interval,
             selector=selector,
+            aliases=aliases or {},
         )
         self._workers: dict[str, DeviceWorker] = {}
         self._workers_lock = threading.Lock()
@@ -552,7 +564,7 @@ class MqttBridge:
 
     # ── lifecycle ───────────────────────────────────────────────────
     def _select_devices(self) -> list[dict]:
-        all_devs = enumerate_devices()
+        all_devs = enumerate_devices(aliases=self.cfg.aliases)
         if self.cfg.selector is None:
             return all_devs
         try:

@@ -43,6 +43,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+from .config import friendly_name_for, load_aliases
 from .protocol import (
     CAT_PARAM,
     CAT_STATE,
@@ -117,11 +118,17 @@ def _build_display_id(info: dict, index: int, serial_counts: dict) -> str:
     return f"dsp408-{_path_hash(path)}"
 
 
-def enumerate_devices() -> list[dict]:
+def enumerate_devices(aliases: dict[str, str] | None = None) -> list[dict]:
     """Return enriched info dicts for every DSP-408 on the bus.
 
     Each entry has: index, vid, pid, path (bytes), serial_number,
-    product_string, manufacturer, display_id.
+    product_string, manufacturer, display_id, friendly_name.
+
+    `friendly_name` is the alias from the user's config (if any matches
+    the device's serial / display_id / path), otherwise equal to
+    display_id. Callers can supply an explicit `aliases` dict (e.g. from
+    a `--aliases PATH` CLI flag); if None, the default search paths are
+    used (see dsp408.config.default_search_paths).
     """
     raw = HidCompat.enumerate(VID, PID)
     # Deduplicate by path (hidapi on Linux can report the same hidraw
@@ -142,20 +149,23 @@ def enumerate_devices() -> list[dict]:
         if s:
             serial_counts[s] = serial_counts.get(s, 0) + 1
 
+    if aliases is None:
+        aliases = load_aliases()
+
     out: list[dict] = []
     for idx, d in enumerate(uniq):
-        out.append(
-            {
-                "index": idx,
-                "vid": d.get("vendor_id", VID),
-                "pid": d.get("product_id", PID),
-                "path": d.get("path") or b"",
-                "serial_number": (d.get("serial_number") or "").strip(),
-                "product_string": (d.get("product_string") or "").strip(),
-                "manufacturer": (d.get("manufacturer_string") or "").strip(),
-                "display_id": _build_display_id(d, idx, serial_counts),
-            }
-        )
+        info = {
+            "index": idx,
+            "vid": d.get("vendor_id", VID),
+            "pid": d.get("product_id", PID),
+            "path": d.get("path") or b"",
+            "serial_number": (d.get("serial_number") or "").strip(),
+            "product_string": (d.get("product_string") or "").strip(),
+            "manufacturer": (d.get("manufacturer_string") or "").strip(),
+            "display_id": _build_display_id(d, idx, serial_counts),
+        }
+        info["friendly_name"] = friendly_name_for(info, aliases) or info["display_id"]
+        out.append(info)
     return out
 
 
@@ -194,7 +204,10 @@ def _resolve_selector(
         s = selector.strip()
         if s.isdigit():
             return _resolve_selector(int(s), devs)
-        # Match display_id, then serial, then path as string.
+        # Match friendly_name, then display_id, then serial, then path string.
+        for d in devs:
+            if d.get("friendly_name") and d["friendly_name"] == s:
+                return d
         for d in devs:
             if d["display_id"] == s:
                 return d
@@ -207,9 +220,12 @@ def _resolve_selector(
                     return d
             except Exception:
                 pass
+        available = [
+            d.get("friendly_name") or d["display_id"] for d in devs
+        ]
         raise DeviceNotFound(
             f"No DSP-408 matches selector {selector!r}. "
-            f"Available: {[d['display_id'] for d in devs]}"
+            f"Available: {available}"
         )
     raise TypeError(f"selector must be int|str|None, got {type(selector)}")
 
@@ -291,6 +307,14 @@ class Device:
     def display_id(self) -> str:
         """Stable string identifier suitable for MQTT topics / HA unique_id."""
         return self._enum_info.get("display_id") or "dsp408"
+
+    @property
+    def friendly_name(self) -> str:
+        """User-facing name: alias from config if set, else display_id.
+
+        Safe for UI labels. For MQTT topics / unique IDs, prefer `display_id`.
+        """
+        return self._enum_info.get("friendly_name") or self.display_id
 
     @property
     def serial_number(self) -> str:
