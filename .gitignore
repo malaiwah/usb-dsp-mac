@@ -1,0 +1,60 @@
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+*.egg-info/
+
+# ── macOS ─────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ── Xcode / DriverKit build artifacts ─────────────────────────────────────
+macos_hid_driver/build/
+macos_hid_driver/DerivedData/
+macos_hid_driver/*.xcodeproj/xcuserdata/
+macos_hid_driver/*.xcodeproj/project.xcworkspace/xcuserdata/
+macos_hid_driver/test_after_driver
+macos_hid_driver/dext_activate
+
+# ── Compiled diagnostic binaries (rebuilt easily from sources) ────────────
+macos_hid_diag/force_hid_prop
+macos_hid_diag/iohidif_open
+macos_hid_diag/hid_svc_client
+macos_hid_diag/usb_direct
+macos_hid_diag/iokit_clean
+macos_hid_diag/iokit_clean2
+macos_hid_diag/search_prop
+macos_hid_diag/iokit_seize
+macos_hid_diag/corehid_*
+!macos_hid_diag/corehid_*.swift
+macos_hid_diag/hid_*
+!macos_hid_diag/hid_*.c
+!macos_hid_diag/hid_*.swift
+!macos_hid_diag/hid_*.sh
+macos_hid_diag/test_bulk
+macos_hid_diag/test_iokit_usb
+macos_hid_diag/usb_read_test
+macos_hid_diag/err_decode
+
+# ── Vendored / extracted reference material ───────────────────────────────
+# Keep firmware binary and manual PDF in downloads/ — they're small refs.
+# Skip the extracted Windows installer tree (the .zip itself is kept).
+downloads/DSP-408-Windows/
+
+# ── Nested third-party project (clone separately if needed) ───────────────
+dsp-408-ui/
+
+# ── Empty placeholder ─────────────────────────────────────────────────────
+hidapi_patch/
+
+# ── IDE ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp

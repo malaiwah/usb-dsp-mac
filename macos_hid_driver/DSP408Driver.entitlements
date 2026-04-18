@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Entitlements for the DSP408HIDDriver.dext DriverKit extension.
+
+    You MUST request the following entitlements from Apple before distributing:
+      - com.apple.developer.driverkit                   (base DriverKit entitlement)
+      - com.apple.developer.driverkit.transport.hid     (HID transport access)
+      - com.apple.developer.driverkit.family.hid.device (HID device family)
+      - com.apple.developer.driverkit.family.hid.eventservice (HID event service family)
+
+    For DEVELOPMENT / SIP-DISABLED TESTING, these entitlements do not need
+    Apple approval — just sign with your development certificate and run:
+        systemextensionsctl developer on
+    (see BUILD.md for full instructions)
+-->
+<plist version="1.0">
+<dict>
+    <!-- Required for ALL DriverKit extensions -->
+    <key>com.apple.developer.driverkit</key>
+    <true/>
+
+    <!-- Required to match IOHIDInterface (HID transport) -->
+    <key>com.apple.developer.driverkit.transport.hid</key>
+    <true/>
+
+    <!-- HID device family — allows IOUserHIDEventDriver to open IOHIDInterface -->
+    <key>com.apple.developer.driverkit.family.hid.device</key>
+    <true/>
+
+    <!-- HID event service family — allows publishing to hidd event system -->
+    <key>com.apple.developer.driverkit.family.hid.eventservice</key>
+    <true/>
+
+    <!-- Standard DriverKit sandbox -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+</dict>
+</plist>

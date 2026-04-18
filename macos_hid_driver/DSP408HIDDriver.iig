@@ -1,0 +1,34 @@
+// DSP408HIDDriver.iig — DriverKit interface definition
+// This file is processed by Xcode's iig tool to generate the DriverKit glue.
+//
+// The driver matches IOHIDInterface for VID=0x0483/PID=0x5750 (Dayton Audio DSP-408).
+// Its IOKitPersonalities entry carries HIDDefaultBehavior=Yes, which (when the
+// personality is applied at match time) sets that property on the IOHIDInterface
+// nub — causing hidd to open it, creating delivery buffers (CreatedBuffers > 0),
+// and making every user-space HID API finally work.
+
+#ifndef DSP408HIDDriver_h
+#define DSP408HIDDriver_h
+
+#include <HIDDriverKit/IOUserHIDEventDriver.iig>
+
+class DSP408HIDDriver : public IOUserHIDEventDriver
+{
+public:
+    // Start is called when the driver is matched to an IOHIDInterface.
+    // We call super::Start, which opens the provider IOHIDInterface and
+    // sets up report delivery buffers.
+    virtual kern_return_t Start(IOService *provider) override;
+    virtual kern_return_t Stop(IOService *provider) override;
+
+    // handleReport is called for each inbound HID report.
+    // The super implementation delivers it to the HID event system.
+    // Override here purely for logging/debugging; remove in production.
+    virtual void handleReport(uint64_t                 timestamp,
+                              uint8_t                 *report,
+                              uint32_t                 reportLength,
+                              IOHIDReportType          type,
+                              uint32_t                 reportID) override LOCALONLY;
+};
+
+#endif /* DSP408HIDDriver_h */

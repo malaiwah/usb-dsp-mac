@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+    <!-- ── Bundle identity ──────────────────────────────────────────────── -->
+    <key>CFBundleIdentifier</key>
+    <string>com.example.DSP408HIDDriver</string>          <!-- change to your Team ID prefix -->
+
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>DEXT</string>
+    <key>CFBundleExecutable</key>
+    <string>DSP408HIDDriver</string>
+
+    <!-- ── Usage description shown in System Settings ───────────────────── -->
+    <key>OSBundleUsageDescription</key>
+    <string>Enables HID input-report delivery for the Dayton Audio DSP-408 equalizer.</string>
+
+    <!-- ── IOKit personalities ──────────────────────────────────────────── -->
+    <!--
+        This personality matches IOHIDInterface for VID=0x0483 / PID=0x5750.
+
+        KEY FIELDS
+        ----------
+        IOProviderClass          = IOHIDInterface   — we attach to the HID interface nub
+        VendorID / ProductID     — exact match wins over Apple's generic catch-all
+        IOProbeScore             = 200              — beats AppleUserHIDDrivers (score ~0-100)
+        HIDDefaultBehavior       = "Yes"            — merged into IOHIDInterface at match time;
+                                                      hidd sees this and calls open() → CreatedBuffers > 0
+        IOClass                  = IOUserHIDEventDriver  — kernel proxy class
+        IOUserClass              = DSP408HIDDriver       — our DEXT class (user space)
+        IOUserServerName         = com.example.DSP408HIDDriver — launchd service name for the DEXT
+        CFBundleIdentifierKernel = com.apple.iokit.IOHIDFamily — required for IOHIDInterface matching
+    -->
+    <key>IOKitPersonalities</key>
+    <dict>
+        <key>DSP408HIDDriver</key>
+        <dict>
+            <!-- Bundle identifiers -->
+            <key>CFBundleIdentifier</key>
+            <string>com.example.DSP408HIDDriver</string>
+            <key>CFBundleIdentifierKernel</key>
+            <string>com.apple.iokit.IOHIDFamily</string>
+
+            <!-- THE critical fix: HIDDefaultBehavior=Yes is merged into the
+                 IOHIDInterface nub at driver-match time by IOKit. hidd reads
+                 this key and calls IOHIDInterface::open(), creating delivery
+                 buffers.  Setting it in a personality (here) is the ONLY
+                 supported way to change it — IORegistryEntrySetCFProperties
+                 returns kIOReturnNotPermitted for IOHIDInterface from any
+                 user-space caller regardless of privilege. -->
+            <key>HIDDefaultBehavior</key>
+            <string>Yes</string>
+
+            <!-- Kernel proxy class for DriverKit HID event drivers -->
+            <key>IOClass</key>
+            <string>IOUserHIDEventDriver</string>
+
+            <!-- Our DEXT class -->
+            <key>IOUserClass</key>
+            <string>DSP408HIDDriver</string>
+
+            <!-- launchd mach service name for the DEXT process.
+                 Must match the string in the launchd plist that Xcode generates
+                 (usually derived from CFBundleIdentifier). -->
+            <key>IOUserServerName</key>
+            <string>com.example.DSP408HIDDriver</string>
+
+            <!-- Match IOHIDInterface, not IOUSBHostInterface -->
+            <key>IOProviderClass</key>
+            <string>IOHIDInterface</string>
+
+            <!-- Higher score beats AppleUserHIDDrivers.dext generic catch-all.
+                 The DSP-408's IOHIDInterface was previously matched by
+                 AppleUserHIDDrivers (which set HIDDefaultBehavior="").
+                 Our more specific VID+PID match wins regardless, but an
+                 explicit high score makes the intent clear. -->
+            <key>IOProbeScore</key>
+            <integer>200</integer>
+
+            <!-- Dayton Audio DSP-408: VID=0x0483 (1155), PID=0x5750 (22352) -->
+            <key>VendorID</key>
+            <integer>1155</integer>
+            <key>ProductID</key>
+            <integer>22352</integer>
+        </dict>
+    </dict>
+
+</dict>
+</plist>
