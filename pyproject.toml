@@ -18,6 +18,9 @@ dependencies = [
 ui = [
     "gradio>=4.44,<6",
 ]
+mqtt = [
+    "paho-mqtt>=1.6,<3",
+]
 dev = [
     "pytest>=7",
     "ruff>=0.5",

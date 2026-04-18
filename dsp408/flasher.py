@@ -18,8 +18,8 @@ Implements the upload sequence proven out in the Windows capture
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 from .protocol import (
     CAT_STATE,
@@ -60,14 +60,17 @@ class FirmwareError(RuntimeError):
 
 def flash_firmware(
     fw_path: Path,
-    progress: Optional[Callable[[int, int, str], None]] = None,
+    progress: Callable[[int, int, str], None] | None = None,
+    device_path: bytes | None = None,
 ) -> None:
-    """Flash a .bin firmware image onto the first attached DSP-408.
+    """Flash a .bin firmware image onto a DSP-408.
 
     Args:
         fw_path: path to .bin (must start with "WMCU").
         progress: optional callback(current, total, phase_label). Called
             repeatedly during block upload; `total` is the block count.
+        device_path: hidapi path to target a specific DSP-408 when more
+            than one is attached. Defaults to the first found.
 
     Raises:
         FileNotFoundError, FirmwareError.
@@ -87,10 +90,13 @@ def flash_firmware(
             progress(cur, total, label)
 
     # ── step 0: find device ───────────────────────────────────────────
-    devs = HidCompat.enumerate(0x0483, 0x5750)
-    if not devs:
-        raise FirmwareError("DSP-408 not found on USB bus")
-    path = devs[0]["path"]
+    if device_path is not None:
+        path = device_path
+    else:
+        devs = HidCompat.enumerate(0x0483, 0x5750)
+        if not devs:
+            raise FirmwareError("DSP-408 not found on USB bus")
+        path = devs[0]["path"]
 
     hid = HidCompat().open_path(path)
     t = Transport(hid)
@@ -182,7 +188,7 @@ def _reopen(path: bytes) -> tuple[HidCompat, Transport]:
     `cython-hidapi` raises OSError/IOError, the newer `hid.Device` raises
     `hid.HIDException`. Catch broadly on re-open only.
     """
-    last_err: Optional[BaseException] = None
+    last_err: BaseException | None = None
     for _ in range(30):
         time.sleep(0.5)
         try:

@@ -4,18 +4,19 @@ Usage:
 
     from dsp408 import Device
 
+    # Single-device (first found)
     with Device.open() as dev:
         dev.connect()
         print(dev.get_info())             # "MYDW-AV1.06"
-        print(dev.read_preset_name())     # e.g. "test"
 
-        # Read one channel's full state (296-byte blob, layout still TBD)
-        ch1_state = dev.read_channel_state(0)
+    # Multiple devices
+    for info in Device.enumerate():
+        print(f"[{info['index']}] {info['display_id']}  path={info['path']!r}")
 
-        # Raw escape hatches for reverse-engineering experiments
-        reply = dev.read_raw(cmd=0x04, category=0x09)
-        dev.write_raw(cmd=0x1f07, data=bytes.fromhex("010096010000001 2"),
-                      category=0x04)
+    # Select by index / serial / path
+    with Device.open(selector=1) as dev: ...
+    with Device.open(selector="MYDW-AV1234") as dev: ...
+    with Device.open(path=b"/dev/hidraw0") as dev: ...
 
 Scope note — what's implemented vs. TBD:
 
@@ -25,6 +26,7 @@ Scope note — what's implemented vs. TBD:
       * read_channel_state(0..7)  — returns 296 raw bytes per channel
       * read_raw() / write_raw() escape hatches
       * Sequence counter that increments with every exchange
+      * Multi-device enumeration + selection (serial / index / path)
 
     TBD (need live round-trip on the Pi to decode):
       * Parsing 0x77NN 296-byte channel state into EqBand / Crossover /
@@ -36,33 +38,32 @@ Scope note — what's implemented vs. TBD:
 """
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Optional
 
 from .protocol import (
     CAT_PARAM,
     CAT_STATE,
     CMD_CONNECT,
     CMD_GET_INFO,
-    CMD_GLOBAL_0x02,
-    CMD_GLOBAL_0x05,
-    CMD_GLOBAL_0x06,
     CMD_IDLE_POLL,
     CMD_PRESET_NAME,
     CMD_READ_CHANNEL_BASE,
-    CMD_STATE_0x13,
     CMD_STATUS,
     CMD_WRITE_CHANNEL_BASE,
     DIR_CMD,
     DIR_RESP,
     DIR_WRITE,
     DIR_WRITE_ACK,
-    Frame,
     PID,
     VID,
+    CMD_GLOBAL_0x02,
+    CMD_GLOBAL_0x05,
+    CMD_GLOBAL_0x06,
+    CMD_STATE_0x13,
+    Frame,
     build_frame,
 )
 from .transport import HidCompat, Transport
@@ -89,6 +90,130 @@ class DeviceInfo:
     state_13: bytes    # 10 bytes from cmd 0x13
 
 
+# ── enumeration helpers ──────────────────────────────────────────────────
+def _path_hash(path: bytes) -> str:
+    """Short stable hash of an hidapi path, for use in display_id when
+    serial is missing or duplicated."""
+    return hashlib.sha1(path or b"").hexdigest()[:8]
+
+
+def _build_display_id(info: dict, index: int, serial_counts: dict) -> str:
+    """Pick a stable string identifier for a device.
+
+    Preference order:
+      1. Non-empty serial number if unique across the bus  → "MYDW-AV1234"
+      2. Serial + index (when multiple devices share a serial) → "MYDW-AV1234#1"
+      3. Path hash fallback (VID/PID-based USB paths with no serial) → "dsp408-a1b2c3d4"
+
+    The result is always a valid MQTT topic component and a valid HA
+    unique_id suffix.
+    """
+    serial = (info.get("serial_number") or "").strip()
+    if serial and serial_counts.get(serial, 0) == 1:
+        return serial
+    if serial:
+        return f"{serial}#{index}"
+    path = info.get("path") or b""
+    return f"dsp408-{_path_hash(path)}"
+
+
+def enumerate_devices() -> list[dict]:
+    """Return enriched info dicts for every DSP-408 on the bus.
+
+    Each entry has: index, vid, pid, path (bytes), serial_number,
+    product_string, manufacturer, display_id.
+    """
+    raw = HidCompat.enumerate(VID, PID)
+    # Deduplicate by path (hidapi on Linux can report the same hidraw
+    # node once per HID usage page).
+    seen: set[bytes] = set()
+    uniq: list[dict] = []
+    for d in raw:
+        p = d.get("path") or b""
+        if p in seen:
+            continue
+        seen.add(p)
+        uniq.append(d)
+
+    # Count serials so we know if any are duplicated.
+    serial_counts: dict[str, int] = {}
+    for d in uniq:
+        s = (d.get("serial_number") or "").strip()
+        if s:
+            serial_counts[s] = serial_counts.get(s, 0) + 1
+
+    out: list[dict] = []
+    for idx, d in enumerate(uniq):
+        out.append(
+            {
+                "index": idx,
+                "vid": d.get("vendor_id", VID),
+                "pid": d.get("product_id", PID),
+                "path": d.get("path") or b"",
+                "serial_number": (d.get("serial_number") or "").strip(),
+                "product_string": (d.get("product_string") or "").strip(),
+                "manufacturer": (d.get("manufacturer_string") or "").strip(),
+                "display_id": _build_display_id(d, idx, serial_counts),
+            }
+        )
+    return out
+
+
+def resolve_selector(
+    selector: int | str | None,
+    devs: list[dict],
+) -> dict:
+    """Pick one device-info dict from the enumerated list.
+
+    Public API for CLI / UI code that needs to resolve a user-provided
+    selector (index, serial, display_id, or path) against an enumerated
+    device list.
+    """
+    return _resolve_selector(selector, devs)
+
+
+def _resolve_selector(
+    selector: int | str | None,
+    devs: list[dict],
+) -> dict:
+    """Pick one device-info dict from the enumerated list."""
+    if not devs:
+        raise DeviceNotFound(
+            f"No DSP-408 found (VID={VID:#06x} PID={PID:#06x})"
+        )
+    if selector is None:
+        return devs[0]
+    # Integer or int-like string: treat as index.
+    if isinstance(selector, int):
+        if not 0 <= selector < len(devs):
+            raise DeviceNotFound(
+                f"Device index {selector} out of range (have {len(devs)})"
+            )
+        return devs[selector]
+    if isinstance(selector, str):
+        s = selector.strip()
+        if s.isdigit():
+            return _resolve_selector(int(s), devs)
+        # Match display_id, then serial, then path as string.
+        for d in devs:
+            if d["display_id"] == s:
+                return d
+        for d in devs:
+            if d["serial_number"] and d["serial_number"] == s:
+                return d
+        for d in devs:
+            try:
+                if d["path"].decode(errors="replace") == s:
+                    return d
+            except Exception:
+                pass
+        raise DeviceNotFound(
+            f"No DSP-408 matches selector {selector!r}. "
+            f"Available: {[d['display_id'] for d in devs]}"
+        )
+    raise TypeError(f"selector must be int|str|None, got {type(selector)}")
+
+
 class Device:
     """High-level DSP-408 USB control.
 
@@ -97,42 +222,88 @@ class Device:
     Gradio UI threads can share one Device.
     """
 
-    def __init__(self, transport: Transport):
+    def __init__(self, transport: Transport, info: dict | None = None):
         self._t = transport
         self._seq = 0
         self._lock = threading.Lock()
-        self._info: Optional[DeviceInfo] = None
+        self._info: DeviceInfo | None = None
+        # Enumeration info at open time (path, serial, display_id).
+        self._enum_info: dict = info or {}
 
     # ── enumeration / opening ──────────────────────────────────────────
     @staticmethod
     def enumerate() -> list[dict]:
-        """Return hidapi info dicts for every DSP-408 on the bus."""
-        return HidCompat.enumerate(VID, PID)
+        """Return enriched info dicts for every DSP-408 on the bus.
+
+        Each entry has: index, vid, pid, path (bytes), serial_number,
+        product_string, manufacturer, display_id.
+        """
+        return enumerate_devices()
 
     @classmethod
-    def open(cls, path: Optional[bytes] = None) -> "Device":
-        """Open the first visible DSP-408 (or one at `path` if given)."""
-        devs = cls.enumerate()
-        if not devs:
-            raise DeviceNotFound(
-                f"No DSP-408 found (VID={VID:#06x} PID={PID:#06x})"
-            )
-        chosen_path = path if path is not None else devs[0]["path"]
-        hid_conn = HidCompat().open_path(chosen_path)
-        return cls(Transport(hid_conn))
+    def open(
+        cls,
+        selector: int | str | None = None,
+        *,
+        path: bytes | None = None,
+    ) -> Device:
+        """Open one DSP-408.
+
+        Args:
+            selector: None → first found; int → index into enumerate();
+                str → display_id, serial number, or string-encoded path.
+            path: explicit hidapi path (bytes); takes precedence over selector.
+        """
+        devs = enumerate_devices()
+        if path is not None:
+            chosen = next((d for d in devs if d["path"] == path), None)
+            if chosen is None:
+                # Allow opening by raw path even if not in enumerate list
+                # (useful if udev is slow to update).
+                chosen = {"path": path, "display_id": f"dsp408-{_path_hash(path)}",
+                          "serial_number": "", "product_string": "",
+                          "manufacturer": "", "index": -1,
+                          "vid": VID, "pid": PID}
+        else:
+            chosen = _resolve_selector(selector, devs)
+        hid_conn = HidCompat().open_path(chosen["path"])
+        return cls(Transport(hid_conn), info=chosen)
 
     def close(self) -> None:
-        if self._t is not None:
-            try:
-                self._t.hid.close()
-            finally:
-                self._t = None  # type: ignore[assignment]
+        # Acquire the exchange lock so a concurrent _exchange() on another
+        # thread can't race us: it holds _lock during every read/write, so
+        # waiting for it guarantees no in-flight I/O when we drop _t.
+        with self._lock:
+            if self._t is not None:
+                try:
+                    self._t.hid.close()
+                finally:
+                    self._t = None  # type: ignore[assignment]
 
-    def __enter__(self) -> "Device":
+    def __enter__(self) -> Device:
         return self
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+    # ── identity ───────────────────────────────────────────────────────
+    @property
+    def display_id(self) -> str:
+        """Stable string identifier suitable for MQTT topics / HA unique_id."""
+        return self._enum_info.get("display_id") or "dsp408"
+
+    @property
+    def serial_number(self) -> str:
+        return self._enum_info.get("serial_number") or ""
+
+    @property
+    def path(self) -> bytes:
+        return self._enum_info.get("path") or b""
+
+    @property
+    def enum_info(self) -> dict:
+        """Read-only copy of the enumeration dict (index/serial/path/etc.)."""
+        return dict(self._enum_info)
 
     # ── low-level exchange ─────────────────────────────────────────────
     def _next_seq(self) -> int:
@@ -148,7 +319,7 @@ class Device:
         category: int = CAT_STATE,
         timeout_ms: int = 2000,
         expect_reply: bool = True,
-    ) -> Optional[Frame]:
+    ) -> Frame | None:
         """Send one frame, optionally wait for the matching reply.
 
         If a previous exchange timed out and the device later emits its
@@ -355,5 +526,5 @@ class Device:
         return self._info
 
     @property
-    def cached_info(self) -> Optional[DeviceInfo]:
+    def cached_info(self) -> DeviceInfo | None:
         return self._info
