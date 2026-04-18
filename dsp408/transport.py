@@ -10,15 +10,12 @@ Handles:
 from __future__ import annotations
 
 import time
-from typing import Iterable, Optional
 
 from .protocol import (
     FRAME_SIZE,
-    HEADER_SIZE,
     Frame,
     parse_frame,
 )
-
 
 DEFAULT_TIMEOUT_MS = 1000
 
@@ -46,7 +43,7 @@ class HidCompat:
         return hid.enumerate(vid, pid)
 
     # ----- opening -----
-    def open_vid_pid(self, vid: int, pid: int) -> "HidCompat":
+    def open_vid_pid(self, vid: int, pid: int) -> HidCompat:
         if self._legacy:
             d = self._hid.device()
             d.open(vid, pid)
@@ -56,7 +53,7 @@ class HidCompat:
             self._dev = self._hid.Device(vid, pid)
         return self
 
-    def open_path(self, path: bytes) -> "HidCompat":
+    def open_path(self, path: bytes) -> HidCompat:
         if self._legacy:
             d = self._hid.device()
             d.open_path(path)
@@ -123,7 +120,7 @@ class Transport:
         self.hid.write(b"\x00" + frame64)
 
     # ----- single frame recv -----
-    def read_frame(self, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> Optional[Frame]:
+    def read_frame(self, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> Frame | None:
         """Read one DSP-408 frame, skipping empty/zero-length reads."""
         deadline = time.monotonic() + timeout_ms / 1000.0
         while time.monotonic() < deadline:
@@ -142,7 +139,7 @@ class Transport:
     # ----- multi-frame recv -----
     def read_response(
         self, timeout_ms: int = DEFAULT_TIMEOUT_MS
-    ) -> Optional[Frame]:
+    ) -> Frame | None:
         """Read a complete response, reassembling continuation frames for
         multi-frame payloads (e.g. cmd=0x77NN returns 296 bytes).
 

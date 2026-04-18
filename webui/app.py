@@ -6,16 +6,18 @@ Launch (Linux / Pi):
 Design scope — matches the Windows app's information architecture but
 honest about what's not yet reverse-engineered:
 
-  * Connection status banner         — IMPLEMENTED (live)
-  * Device identity + preset name    — IMPLEMENTED (live)
-  * Master volume slider             — placeholder (write path TBD)
+  * Multi-device picker                — IMPLEMENTED (live, differs from
+                                         Windows app which controls one)
+  * Connection status banner           — IMPLEMENTED (live)
+  * Device identity + preset name      — IMPLEMENTED (live)
+  * Master volume slider               — placeholder (write path TBD)
   * 8-channel strips (gain/mute/delay/phase/source) — placeholder
-  * 10-band PEQ graph + controls     — placeholder (needs 0x77NN decode)
-  * High-pass / low-pass filters     — placeholder
-  * Mixer 4×8 matrix                 — placeholder
-  * Raw protocol console             — IMPLEMENTED (read/write any cmd)
-  * Firmware flash / recovery        — IMPLEMENTED (life-saving)
-  * State snapshot dump              — IMPLEMENTED
+  * 10-band PEQ graph + controls       — placeholder (needs 0x77NN decode)
+  * High-pass / low-pass filters       — placeholder
+  * Mixer 4×8 matrix                   — placeholder
+  * Raw protocol console               — IMPLEMENTED (read/write any cmd)
+  * Firmware flash / recovery          — IMPLEMENTED (life-saving)
+  * State snapshot dump                — IMPLEMENTED
 
 The placeholder controls are wired to real UI widgets with correct
 ranges and labels from the manual, so once the 0x77NN layout is
@@ -30,7 +32,6 @@ import time
 import traceback
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
 
 try:
     import gradio as gr
@@ -43,8 +44,15 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from dsp408 import Device, DeviceNotFound, ProtocolError  # noqa: E402
-from dsp408.flasher import flash_firmware                 # noqa: E402
+from dsp408 import (  # noqa: E402
+    Device,
+    DeviceNotFound,
+    ProtocolError,
+    enumerate_devices,
+    resolve_selector,
+)
+from dsp408.flasher import flash_firmware  # noqa: E402
+from dsp408.protocol import category_hint  # noqa: E402
 
 # ── Domain constants (from DSP-408 manual) ─────────────────────────────
 NUM_OUTPUT_CHANNELS = 8
@@ -71,11 +79,13 @@ DEFAULT_BAND_FREQS = [31, 65, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 
 # ── DeviceSession: single shared, lazily-opened connection ─────────────
 class DeviceSession:
-    """Lazy, thread-safe wrapper around one Device.
+    """Lazy, thread-safe wrapper around one Device, with live device-switch support.
 
     The Gradio UI serves many simultaneous widget callbacks; they all go
     through the single lock inside Device, so we just need one shared
-    instance that auto-reconnects on error.
+    instance that auto-reconnects on error. The `selector` is mutable
+    so the top-of-page device picker can switch targets without
+    restarting the server.
 
     Uses a reentrant lock because some call paths (e.g. reconnect →
     close → _ensure) re-enter locked regions on the same thread.
@@ -85,16 +95,17 @@ class DeviceSession:
     """
 
     def __init__(self):
-        self._dev: Optional[Device] = None
+        self._dev: Device | None = None
         self._lock = threading.RLock()
         self._flashing = False
-        self.last_error: Optional[str] = None
+        self._selector: str | None = None  # None = first found
+        self.last_error: str | None = None
 
     # The "locked" helpers do the work assuming the caller holds _lock.
     def _ensure_locked(self) -> Device:
         if self._dev is not None:
             return self._dev
-        self._dev = Device.open()
+        self._dev = Device.open(selector=self._selector)
         self._dev.connect()
         return self._dev
 
@@ -105,6 +116,26 @@ class DeviceSession:
             except Exception:
                 pass
             self._dev = None
+
+    @property
+    def selector(self) -> str | None:
+        with self._lock:
+            return self._selector
+
+    def set_selector(self, selector: str | None) -> None:
+        """Switch which DSP-408 the session targets. Closes current handle."""
+        with self._lock:
+            if selector != self._selector:
+                self._close_locked()
+                self._selector = selector
+
+    def current_device_path(self) -> bytes | None:
+        with self._lock:
+            return self._dev.path if self._dev else None
+
+    def current_display_id(self) -> str | None:
+        with self._lock:
+            return self._dev.display_id if self._dev else None
 
     def reconnect(self) -> str:
         with self._lock:
@@ -125,7 +156,7 @@ class DeviceSession:
         """Run fn(device, *args, **kwargs), re-establishing the connection
         once if the first attempt fails. Blocks if a firmware flash is
         in progress (the flasher owns the USB handle exclusively)."""
-        last: Optional[Exception] = None
+        last: Exception | None = None
         for attempt in range(2):
             with self._lock:
                 if self._flashing:
@@ -164,6 +195,59 @@ class DeviceSession:
 SESSION = DeviceSession()
 
 
+# ── Device-picker helpers ──────────────────────────────────────────────
+def _picker_choices() -> list[str]:
+    """Return the labels shown in the device dropdown."""
+    out = []
+    for d in enumerate_devices():
+        label = f"[{d['index']}] {d['display_id']}"
+        if d.get("product_string") and d["product_string"] != d["display_id"]:
+            label += f" · {d['product_string']}"
+        out.append(label)
+    return out
+
+
+def _label_to_selector(label: str) -> str | None:
+    """Convert a dropdown label back to the stable selector string."""
+    # Format: "[<index>] <display_id>[ · product]"
+    if not label:
+        return None
+    rest = label.split("]", 1)
+    if len(rest) != 2:
+        return label
+    tail = rest[1].strip()
+    if " · " in tail:
+        tail = tail.split(" · ", 1)[0]
+    return tail.strip() or None
+
+
+def do_refresh_devices():
+    """Re-enumerate USB and update the picker dropdown choices."""
+    choices = _picker_choices()
+    if not choices:
+        return gr.update(choices=[], value=None), "No DSP-408 attached."
+    # Keep current selection if still present
+    sel = SESSION.selector
+    current_label = None
+    for c in choices:
+        if _label_to_selector(c) == sel:
+            current_label = c
+            break
+    if current_label is None:
+        current_label = choices[0]
+    return (
+        gr.update(choices=choices, value=current_label),
+        f"{len(choices)} device(s) attached.",
+    )
+
+
+def do_pick_device(label: str):
+    """User selected a different DSP-408 from the dropdown."""
+    sel = _label_to_selector(label)
+    SESSION.set_selector(sel)
+    return do_connect()
+
+
 # ── Callback helpers ───────────────────────────────────────────────────
 def safe_text(fn, *args, error_prefix="error") -> str:
     """Run a callback and turn exceptions into friendly messages."""
@@ -181,6 +265,7 @@ def do_connect() -> tuple[str, str, str]:
     """Returns (banner_html, identity, preset_name)."""
     try:
         info = SESSION.safe_call(lambda d: d.snapshot())
+        did = SESSION.current_display_id() or "?"
     except DeviceNotFound:
         return (
             '<span style="color:#c33">● Not connected — no DSP-408 on USB</span>',
@@ -191,7 +276,8 @@ def do_connect() -> tuple[str, str, str]:
         return (f'<span style="color:#c33">● Error: {e}</span>', "", "")
 
     banner = (
-        f'<span style="color:#2a2">● Connected — {info.identity}</span>'
+        f'<span style="color:#2a2">● Connected — {info.identity} '
+        f'<span style="color:#888">({did})</span></span>'
     )
     return banner, info.identity, info.preset_name
 
@@ -212,28 +298,11 @@ def do_snapshot_dump() -> str:
     )
 
 
-def _category_hint(cmd: int) -> int:
-    """Pick the right category byte for a given command code.
-
-    Parameter commands (0x77NN, 0x1fNN, 0x2000) use category 0x04;
-    everything else uses 0x09 (state). This matches what DSP-408.exe
-    V1.24 emits in the Windows captures.
-    """
-    from dsp408.protocol import CAT_PARAM, CAT_STATE
-    if 0x7700 <= cmd <= 0x77FF:
-        return CAT_PARAM
-    if 0x1F00 <= cmd <= 0x1FFF:
-        return CAT_PARAM
-    if cmd == 0x2000:
-        return CAT_PARAM
-    return CAT_STATE
-
-
 def do_raw_read(cmd_hex: str, cat_hex: str) -> str:
     try:
         cmd = int(cmd_hex, 16)
         cat_str = (cat_hex or "").strip().lower()
-        cat = _category_hint(cmd) if cat_str in ("", "auto") else int(cat_str, 16)
+        cat = category_hint(cmd) if cat_str in ("", "auto") else int(cat_str, 16)
     except ValueError:
         return "bad hex"
     try:
@@ -254,7 +323,7 @@ def do_raw_write(cmd_hex: str, hex_payload: str, cat_hex: str) -> str:
     try:
         cmd = int(cmd_hex, 16)
         cat_str = (cat_hex or "").strip().lower()
-        cat = _category_hint(cmd) if cat_str in ("", "auto") else int(cat_str, 16)
+        cat = category_hint(cmd) if cat_str in ("", "auto") else int(cat_str, 16)
         payload = bytes.fromhex(hex_payload.replace(" ", "").replace(",", ""))
     except ValueError as e:
         return f"bad input: {e}"
@@ -295,7 +364,7 @@ def do_rename_preset(new_name: str) -> str:
 
 # ── Firmware flashing ──────────────────────────────────────────────────
 def do_flash(fw_file) -> str:
-    """Flash the selected .bin firmware.
+    """Flash the selected .bin firmware onto the currently-picked device.
 
     Holds SESSION.flash_lock() for the entire upload so no other widget
     callback can steal the USB handle mid-flash (this is a hard EBUSY
@@ -313,9 +382,20 @@ def do_flash(fw_file) -> str:
     def progress(cur: int, total: int, label: str) -> None:
         log.append(f"[{label:>22}] {cur}/{total}")
 
+    # Resolve device path so we target the currently-picked device (not
+    # just the first on the bus).
+    target_path = SESSION.current_device_path()
+    if target_path is None:
+        try:
+            target_path = resolve_selector(
+                SESSION.selector, enumerate_devices()
+            )["path"]
+        except DeviceNotFound as e:
+            return f"error: {e}"
+
     with SESSION.flash_lock():
         try:
-            flash_firmware(path, progress=progress)
+            flash_firmware(path, progress=progress, device_path=target_path)
         except Exception as e:
             log.append(f"ERROR: {e}")
             return "\n".join(log)
@@ -332,8 +412,26 @@ def build_ui() -> gr.Blocks:
         gr.Markdown(
             "# DSP-408 Control\n"
             "Dayton Audio DSP-408 — 4 inputs × 8 outputs, 10-band PEQ per "
-            "channel. Use Raw Console to experiment with any command live."
+            "channel. Supports **multiple DSP-408s at once** (pick which "
+            "one you're editing from the Device dropdown). Use the Raw "
+            "Console to experiment with any command live."
         )
+
+        # ── Device picker (multi-device) ──────────────────────────
+        initial_choices = _picker_choices()
+        with gr.Row():
+            device_picker = gr.Dropdown(
+                choices=initial_choices,
+                value=initial_choices[0] if initial_choices else None,
+                label="Device",
+                interactive=True,
+                scale=3,
+            )
+            refresh_btn = gr.Button("↻ Refresh devices", scale=1)
+            picker_status = gr.Markdown(
+                f"{len(initial_choices)} device(s) attached."
+                if initial_choices else "No DSP-408 attached.",
+            )
 
         # Banner + connect
         with gr.Row():
@@ -351,6 +449,17 @@ def build_ui() -> gr.Blocks:
             preset_box = gr.Textbox(label="Active preset name")
             rename_btn = gr.Button("Rename preset")
         rename_log = gr.Textbox(label="Rename result", interactive=False)
+
+        # Wire picker
+        refresh_btn.click(
+            fn=do_refresh_devices,
+            outputs=[device_picker, picker_status],
+        )
+        device_picker.change(
+            fn=do_pick_device,
+            inputs=device_picker,
+            outputs=[banner, identity_box, preset_box],
+        )
 
         connect_btn.click(
             fn=do_connect, outputs=[banner, identity_box, preset_box]
@@ -514,6 +623,8 @@ def build_ui() -> gr.Blocks:
                     "HID Usage Page matching and talks to the device by "
                     "VID/PID, so it can recover a unit flashed with a "
                     "patched HID descriptor.\n\n"
+                    "Flashing targets the device currently selected in "
+                    "the **Device** dropdown at the top of the page. "
                     "Expect ~2 minutes (trigger → prep → 1465 blocks → "
                     "apply + reboot). Do NOT unplug during the upload."
                 )

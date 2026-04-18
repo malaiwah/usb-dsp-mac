@@ -30,19 +30,27 @@ Device specs (from the manual):
   * Master volume + per-channel mute + per-channel phase invert
 """
 
+from .device import (
+    Device,
+    DeviceInfo,
+    DeviceNotFound,
+    ProtocolError,
+    enumerate_devices,
+    resolve_selector,
+)
 from .protocol import (
-    VID,
-    PID,
-    FRAME_MAGIC,
     DIR_CMD,
     DIR_RESP,
     DIR_WRITE,
     DIR_WRITE_ACK,
+    FRAME_MAGIC,
+    PID,
+    VID,
     build_frame,
+    category_hint,
     parse_frame,
     xor_checksum,
 )
-from .device import Device, DeviceNotFound, ProtocolError
 
 __all__ = [
     "VID",
@@ -53,11 +61,15 @@ __all__ = [
     "DIR_WRITE",
     "DIR_WRITE_ACK",
     "build_frame",
+    "category_hint",
     "parse_frame",
     "xor_checksum",
     "Device",
+    "DeviceInfo",
     "DeviceNotFound",
     "ProtocolError",
+    "enumerate_devices",
+    "resolve_selector",
 ]
 
 __version__ = "0.1.0"

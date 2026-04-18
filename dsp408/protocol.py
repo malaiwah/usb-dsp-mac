@@ -58,6 +58,23 @@ CAT_STATE = 0x09      # connect, get_info, preset name, status, idle poll, firmw
 CAT_PARAM = 0x04      # parameter read/write (0x77NN, 0x1fNN, 0x2000)
 
 
+def category_hint(cmd: int) -> int:
+    """Pick the right `category` byte for a given command code.
+
+    Parameter commands (0x77NN, 0x1fNN, 0x2000) use category 0x04
+    (CAT_PARAM); everything else uses 0x09 (CAT_STATE). Mirrors what
+    DSP-408.exe V1.24 emits in the Windows captures and used by the CLI
+    / Gradio UI / MQTT bridge to default the category correctly.
+    """
+    if 0x7700 <= cmd <= 0x77FF:
+        return CAT_PARAM
+    if 0x1F00 <= cmd <= 0x1FFF:
+        return CAT_PARAM
+    if cmd == 0x2000:
+        return CAT_PARAM
+    return CAT_STATE
+
+
 def xor_checksum(data: bytes) -> int:
     """XOR of all bytes — matches device checksum over frame[4 .. len-1]."""
     c = 0
@@ -224,6 +241,7 @@ __all__ = [
     "DIR_WRITE_ACK",
     "CAT_STATE",
     "CAT_PARAM",
+    "category_hint",
     "xor_checksum",
     "build_frame",
     "parse_frame",
