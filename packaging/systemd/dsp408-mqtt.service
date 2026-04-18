@@ -34,12 +34,18 @@ Group=plugdev
 SupplementaryGroups=dialout
 
 # Concrete values live in /etc/default/dsp408-mqtt (leading `-` means
-# "missing file is fine" — the defaults below still apply).
+# "missing file is fine" — the defaults below still apply). Values
+# containing whitespace MUST be quoted, otherwise systemd splits on
+# whitespace and rejects the trailing tokens.
 Environment=DSP408_BIN=/usr/local/bin/dsp408
-Environment=DSP408_ARGS=--broker 127.0.0.1
+Environment="DSP408_ARGS=--broker 127.0.0.1"
 EnvironmentFile=-/etc/default/dsp408-mqtt
 
-ExecStart=${DSP408_BIN} mqtt ${DSP408_ARGS}
+# systemd does not allow variables in the first word of ExecStart, so
+# we wrap with /bin/sh. `$$` escapes systemd's own substitution pass,
+# leaving shell to do the expansion (which also re-splits DSP408_ARGS
+# on whitespace as a normal command line does).
+ExecStart=/bin/sh -c 'exec "$$DSP408_BIN" mqtt $$DSP408_ARGS'
 
 # Clean shutdown: bridge handles SIGTERM and publishes offline LWTs
 # before disconnecting. Give it up to 10s.
