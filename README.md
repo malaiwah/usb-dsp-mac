@@ -44,8 +44,18 @@ package and a udev rule to let your user open `/dev/hidraw*`:
 
 ```
 # /etc/udev/rules.d/60-dsp408.rules
+# Running firmware — cython-hidapi from PyPI uses libusb on Linux so we need
+# the `usb` subsystem rule in addition to hidraw:
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5750", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb",    ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5750", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+# STM32 DFU bootloader (for `dsp408 flash` recovery path):
 SUBSYSTEM=="usb",    ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+```
+
+Reload udev after editing:
+
+```bash
+sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
 ## CLI
