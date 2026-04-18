@@ -1,0 +1,38 @@
+Capture: windows-04c-stream-nostream-stream.pcapng
+Date: 2026-04-18
+Interface: USBPcap3
+App: DSP-408.exe V1.24
+
+Summary:
+  frames: 5976
+  time span: 0.000000000 -> 85.040295000s
+  Interrupt-IN completions with data: 1502
+
+Procedure: streaming ON -> (user changed settings) -> streaming OFF -> (user changed settings) -> streaming ON
+Purpose: isolate the settings write commands that disappear in streaming noise.
+
+Command distribution (non-0x03):
+  0x0077..0x0777: 8 EQ/channel read commands, each returns 40 bytes of DSP parameters
+  0x1f00..0x1f07: 8 write registers (a1/51 direction = write mode), user changed these during nostream
+  0x2000: 4 frames (unknown, likely another write register)
+  0x02: 8 bytes (routing/config read)
+  0x05: 8 bytes (crossover config read)
+  0x06: 8 bytes (channel config read, 8 values: 03 09 04 0a 0f 12 16 17)
+  0x13: 10 bytes (state: 83 83 83 83 d1 c7 bb bb bb bb)
+  0x34: 1 byte (status read)
+
+Protocol clarification from this capture:
+  Direction a2/53 = READ (host queries, device responds with current value)
+  Direction a1/51 = WRITE (host sends new value, device acks with 0-length data)
+  This is the same a1/51 pair used for firmware blocks — it is a general "write" indicator,
+  not exclusive to firmware mode.
+
+Write command format (0x1fNN, dir=a1):
+  data[0..1]: 01 00 (constant)
+  data[2..5]: value (LE uint32) — 0 = reset/default
+  data[6]:    00
+  data[7]:    sub-index (varies per cmd: 0x12 for 0x1f07, 0x0f for 0x1f06, etc.)
+
+0x77NN read response (40 bytes each, same value for all 8 channels in this capture):
+  28 01 1f 00 58 02 34 00 00 00 41 00 58 02 34 00 00 00 ...
+  Likely EQ filter parameters: frequency, Q, gain per band.
