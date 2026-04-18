@@ -68,6 +68,26 @@ def sanitize_id(s: str) -> str:
     return s or "dsp408"
 
 
+def _rc_is_success(rc) -> bool:
+    """Return True if a paho-mqtt connect/publish return code is success.
+
+    paho v1: `rc` is an int (0 = success). `int(rc) == 0`.
+    paho v2: `rc` is a `ReasonCode` object. It does NOT implement
+    `__int__`, so `int(rc)` raises TypeError. Use `.is_failure` or
+    the `.value` attribute instead.
+    """
+    # v2 ReasonCode
+    if hasattr(rc, "is_failure"):
+        return not rc.is_failure
+    if hasattr(rc, "value"):
+        return int(rc.value) == 0
+    # v1 plain int
+    try:
+        return int(rc) == 0
+    except (TypeError, ValueError):
+        return False
+
+
 @dataclass
 class BridgeConfig:
     broker: str
@@ -496,8 +516,12 @@ class MqttBridge:
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         """paho v1 signature: (client, userdata, flags, rc).
         paho v2 signature: (client, userdata, flags, reason_code, properties).
-        `properties` has a default so both work."""
-        ok = (int(rc) == 0)
+        `properties` has a default so both work.
+
+        `rc` is an int in v1, a `ReasonCode` in v2 (which doesn't implement
+        `__int__` but exposes `.value` and `.is_failure`).
+        """
+        ok = _rc_is_success(rc)
         if not ok:
             log.error("MQTT connect failed: rc=%s", rc)
             return

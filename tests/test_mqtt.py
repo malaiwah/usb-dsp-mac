@@ -149,3 +149,30 @@ def test_discovery_has_bridge_level_lwt_availability():
     assert mqtt.bridge_status_topic("dsp408") == "dsp408/bridge/status"
     # avty_mode "all" means both availability sources must be online
     assert doc.get("avty_mode") == "all"
+
+
+def test_rc_is_success_paho_v1_int():
+    """paho v1 passes a plain int rc to on_connect."""
+    assert mqtt._rc_is_success(0) is True
+    assert mqtt._rc_is_success(1) is False
+    assert mqtt._rc_is_success(5) is False
+
+
+def test_rc_is_success_paho_v2_reasoncode():
+    """paho v2 passes a ReasonCode object with .is_failure / .value.
+    ReasonCode deliberately does NOT implement __int__, so `int(rc)`
+    raises TypeError — this regressed in the first Pi live-test.
+    """
+
+    class _FakeReasonCode:
+        """Mimics paho v2 ReasonCode: no __int__, has .is_failure / .value."""
+
+        def __init__(self, value: int):
+            self.value = value
+            self.is_failure = value != 0
+
+        def __int__(self):
+            raise TypeError("ReasonCode does not support int()")
+
+    assert mqtt._rc_is_success(_FakeReasonCode(0)) is True
+    assert mqtt._rc_is_success(_FakeReasonCode(5)) is False
