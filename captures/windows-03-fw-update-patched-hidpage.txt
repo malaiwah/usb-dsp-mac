@@ -1,0 +1,28 @@
+Capture: windows-03-fw-update-patched-hidpage.pcapng (renamed from windows-hidpatch-terminal.pcapng)
+Date: 2026-04-18
+Interface: USBPcap3
+Firmware: DSP-408-Firmware-V6.21-PATCHED-hidpage.bin
+  Patch: 1-byte change in HID Report Descriptor Usage Page (0x8C Bar Code Scanner -> 0x0C Consumer Control)
+App: DSP-408.exe V1.24
+
+Summary (from analyze_capture.py):
+  frames: 7220
+  time span: 0.000000000 -> 111.718845000s
+
+fw blocks (cmd=0x38): 1465 sent, all acked
+GUI result: firmware update completed successfully
+
+POST-FLASH OBSERVATION:
+  DSP-408.exe can no longer detect the device after reflash.
+  Device still appears as VID 0483 / PID 5750 in Device Manager.
+  Cause: app uses HID Usage Page to enumerate device; Usage Page changed to 0x0C.
+  This is not a brick — the device runs normally with patched descriptor.
+
+RECOVERY:
+  Used flash_firmware.py (in project root) to reflash original V6.21 over raw HID by VID/PID.
+  Recovery succeeded — script connected via CMD_CONNECT (0xcc), sent 1465 cmd=0x38 blocks.
+  Device confirmed working again after unplug/replug.
+
+RESULT: HIDPAGE PATCH ACCEPTED — firmware has no signature check at all.
+  Bootloader accepts any valid-format firmware regardless of content.
+  macOS HID compatibility CAN be fixed via custom firmware.

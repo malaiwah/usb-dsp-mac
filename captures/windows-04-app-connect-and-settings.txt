@@ -1,0 +1,15 @@
+Capture: windows-04-app-connect-and-settings.pcapng
+Date: 2026-04-18
+Interface: USBPcap3
+App: DSP-408.exe V1.24
+
+Summary (from analyze_capture.py):
+  frames: 30550
+  time span: 0.000000000 -> 291.696336000s
+  Interrupt-IN completions with data: 7629
+
+Contents: full app session — connect/init handshake, then user changed volumes,
+muted channels, saved and loaded presets. Longest capture (~4.8 min).
+Includes complete command set for day-to-day operations.
+
+Same 80 80 80 ee protocol as windows-01.

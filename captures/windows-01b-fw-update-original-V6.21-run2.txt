@@ -1,0 +1,15 @@
+Capture: windows-01b-fw-update-original-V6.21-run2.pcapng
+Date: 2026-04-18
+Interface: USBPcap3
+Firmware: DSP-408-Firmware.bin = DSP-408-Firmware-V6.21.bin (identical, SHA-256: 97a4e23c315fbccdb5aff4cd5d6673643bb902b9138493b362df664581729268)
+  Note: the DSP-408.exe GUI displayed this file without a name label, hence "noname" in original filename.
+  Confirmed identical to V6.21 by SHA-256. Second capture run of the same firmware.
+App: DSP-408.exe V1.24
+
+Summary (from analyze_capture.py):
+  frames: 17376
+  time span: 0.000000000 -> 100.865956000s
+  Interrupt-IN completions with data: 4313
+
+Same protocol as windows-01. Longer capture, more idle-poll frames.
+GUI result: firmware update completed successfully

@@ -1,0 +1,16 @@
+Capture: windows-04b-volumes-mute-presets.pcapng
+Date: 2026-04-18
+Interface: USBPcap3
+App: DSP-408.exe V1.24
+
+Summary (from analyze_capture.py):
+  frames: 13088
+  time span: 0.000000000 -> 124.483118000s
+  Interrupt-IN completions with data: 3278
+
+Contents: user session focused on volume changes, mute, save/load presets.
+Capture starts mid-session (no connection handshake at t=0 — first frames are
+already cmd=0x03 polling, device was already connected). Supplemental settings
+capture alongside windows-04-app-connect-and-settings.pcapng.
+
+Same 80 80 80 ee protocol.

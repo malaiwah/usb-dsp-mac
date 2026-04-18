@@ -1,0 +1,17 @@
+Capture: windows-02-fw-update-patched-noop.pcapng
+Date: 2026-04-18
+Interface: USBPcap3
+Firmware: DSP-408-Firmware-V6.21-PATCHED-noop.bin
+  Patch: 1-byte flip in zero-padding region of V6.21 firmware.
+  Tests: does the bootloader verify whole-image integrity?
+App: DSP-408.exe V1.24
+
+Summary (from analyze_capture.py):
+  frames: 8766
+  time span: 0.000000000 -> 43.349320000s
+
+fw blocks (cmd=0x38): 1465 sent, all acked
+GUI result: "Update successfully"
+
+RESULT: NOOP PATCH ACCEPTED — device has NO whole-image signature/integrity check.
+Implication: custom firmware can be flashed from macOS using the same cmd=0x38 protocol.

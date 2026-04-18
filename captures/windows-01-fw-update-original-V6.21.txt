@@ -1,0 +1,34 @@
+Capture: windows-01-fw-update-original-V6.21.pcapng
+Date: 2026-04-18
+Interface: USBPcap3
+Firmware: DSP-408-Firmware-V6.21.bin (SHA-256: 97a4e23c315fbccdb5aff4cd5d6673643bb902b9138493b362df664581729268)
+App: DSP-408.exe V1.24
+
+Summary (from analyze_capture.py):
+  frames: 11744
+  time span: 0.000000000 -> 85.307397000s
+  endpoints: {0x00: 12, 0x01: 5844, 0x80: 32, 0x82: 5856}
+  Interrupt-IN completions with data: 2921
+
+Protocol discovered (NOT WMCU — completely different):
+  Magic header: 80 80 80 ee
+  Direction: a2 = host->device, 53 = device->host
+  Frame: magic[4] | dir[1] | 01 | seq[1] | 09 | cmd[4 LE] | len[2 LE] | data[len] | chk[1] | aa | 00-pad
+  Checksum: XOR of bytes[4..14+len-1]
+
+Connection handshake (frames 11-43, t~15.4s after capture start):
+  cmd=0xcc: CONNECT — device acks with 1 byte 0x00 (success)
+  cmd=0x04: GET_INFO — device returns "MYDW-AV1.06" (11 bytes)
+  cmd=0x00 seq=1..6: READ_PRESET_NAME — device returns preset name or empty (15 bytes)
+  cmd=0x13: unknown — device returns 10 bytes of data
+
+Idle polling:
+  cmd=0x03: repeated poll (preset name read), every ~30ms
+
+Firmware upload (cmd=0x38, direction bytes a1/51 instead of a2/53):
+  1465 blocks x 48 bytes = 70080 bytes
+  Firmware data starts at .bin file offset 8 (after 8-byte WMCU container header "WMCU\x08\x00P\x00")
+  Each block: dir=a1 | 01 | seq | 09 | cmd=38000000 | len=3000 | 48-bytes-of-firmware | chk | aa
+  Device acks each block with dir=51 | ... | cmd=38000000
+
+GUI result: firmware update completed successfully

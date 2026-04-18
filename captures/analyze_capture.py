@@ -67,6 +67,57 @@ def run_tshark(pcap: Path) -> list[dict]:
     return rows
 
 
+def decode_dsp408_frame(hex_bytes: str) -> str | None:
+    """Decode DSP-408 HID transport frame (magic 80 80 80 ee).
+
+    Frame layout (64 bytes total):
+      [0..3]  80 80 80 ee   magic
+      [4]     a2 / 53       direction: a2=host→dev, 53=dev→host
+      [5]     01            protocol version
+      [6]     NN            sequence number
+      [7]     09            constant
+      [8..11] CMD[4]        command code (LE uint32)
+      [12..13] LEN[2]       payload length (LE uint16)
+      [14..]  DATA          payload (LEN bytes)
+      [14+LEN] CHK          XOR of bytes[4..14+LEN-1]
+      [15+LEN] aa           end marker
+      rest: 00 padding
+    """
+    if not hex_bytes:
+        return None
+    hb = hex_bytes.replace(":", "").strip()
+    try:
+        b = bytes.fromhex(hb)
+    except ValueError:
+        return None
+    if len(b) < 16 or b[0] != 0x80 or b[1] != 0x80 or b[2] != 0x80 or b[3] != 0xee:
+        return None
+    direction = "host→dev" if b[4] == 0xa2 else ("dev→host" if b[4] == 0x53 else f"dir={b[4]:02x}")
+    seq = b[6]
+    cmd = int.from_bytes(b[8:12], "little")
+    data_len = int.from_bytes(b[12:14], "little")
+    data = b[14:14 + data_len] if 14 + data_len <= len(b) else b""
+    chk_pos = 14 + data_len
+    if chk_pos >= len(b):
+        return f"DSP408 dir={b[4]:02x} seq={seq} cmd=0x{cmd:02x} len={data_len} (frame too short)"
+    chk = b[chk_pos]
+    expected_chk = 0
+    for i in range(4, min(chk_pos, len(b))):
+        expected_chk ^= b[i]
+    chk_ok = "✓" if chk == expected_chk else f"✗(got {chk:02x} expect {expected_chk:02x})"
+    data_str = ""
+    if data:
+        printable = all(0x20 <= c < 0x7f for c in data if c != 0)
+        stripped = data.rstrip(b"\x00")
+        if printable and stripped:
+            data_str = f'"{stripped.decode("ascii", errors="replace")}"'
+        else:
+            data_str = data.hex(" ")
+    return (f"DSP408 {direction} seq={seq} cmd=0x{cmd:02x} len={data_len}"
+            + (f" data={data_str}" if data_str else "")
+            + f" chk={chk_ok}")
+
+
 def decode_wmcu_frame(hex_bytes: str) -> str | None:
     """Return a one-line decode of a 64-byte vendor frame, or None if it
     doesn't look WMCU-framed.
@@ -146,8 +197,9 @@ def analyze(pcap: Path) -> None:
     for r in rows[:enum_end]:
         fn = r["frame.number"]
         t  = r["frame.time_relative"]
-        hexd = decode_wmcu_frame(r.get("usbhid.data", "") or r.get("usb.capdata", ""))
-        extra = f"   WMCU: {hexd}" if hexd else ""
+        raw_hex = r.get("usbhid.data", "") or r.get("usb.capdata", "")
+        hexd = decode_dsp408_frame(raw_hex) or decode_wmcu_frame(raw_hex)
+        extra = f"   PROTO: {hexd}" if hexd else ""
         print(f"  #{fn:>4s} t={t:>12s}  {classify(r)}  {decode_setup(r)}"
               f" ulen={r.get('usb.urb_len','')} dlen={r.get('usb.data_len','')}"
               f"{extra}")
@@ -158,14 +210,18 @@ def analyze(pcap: Path) -> None:
     for r in rows[enum_end:]:
         fn = r["frame.number"]
         t  = r["frame.time_relative"]
-        hexd = decode_wmcu_frame(r.get("usbhid.data", "") or r.get("usb.capdata", ""))
-        extra = f"   WMCU: {hexd}" if hexd else ""
+        raw_hex = r.get("usbhid.data", "") or r.get("usb.capdata", "")
+        hexd = decode_dsp408_frame(raw_hex) or decode_wmcu_frame(raw_hex)
+        extra = f"   PROTO: {hexd}" if hexd else ""
         is_in  = (r.get("usb.endpoint_address.direction") == "1")
         tag = "  ← IN " if is_in else "  → OUT"
         dlen = r.get("usb.data_len", "")
         # Only note IN completions with data_len > 0 — those are device replies
         note = ""
-        if r.get("usb.urb_type") == "C" and is_in and dlen and dlen != "0":
+        urb_type = r.get("usb.urb_type", "")
+        # USBPcap (Windows) leaves urb_type empty; Linux usbmon uses "C"/"S"
+        is_completion = urb_type in ("C", "")
+        if is_completion and is_in and dlen and dlen != "0":
             note = f"  ** {dlen} bytes from device **"
         print(f"  #{fn:>4s} t={t:>12s} {tag} {classify(r)} "
               f"ulen={r.get('usb.urb_len','')} dlen={dlen}{note}{extra}")
@@ -175,7 +231,7 @@ def analyze(pcap: Path) -> None:
     in_int_data = [r for r in rows
                    if r.get("usb.transfer_type") == "0x01"
                    and r.get("usb.endpoint_address.direction") == "1"
-                   and r.get("usb.urb_type") == "C"
+                   and r.get("usb.urb_type", "") in ("C", "")  # "C"=Linux, ""=USBPcap
                    and r.get("usb.data_len", "0") not in ("", "0")]
     print()
     print(f"Interrupt-IN completions with data (= device→host replies): "
