@@ -42,6 +42,8 @@ macos_hid_diag/test_bulk
 macos_hid_diag/test_iokit_usb
 macos_hid_diag/usb_read_test
 macos_hid_diag/err_decode
+macos_hid_diag/dump_hid_descriptor
+macos_hid_diag/try_alt_report_types
 
 # ── Vendored / extracted reference material ───────────────────────────────
 # Keep firmware binary and manual PDF in downloads/ — they're small refs.
