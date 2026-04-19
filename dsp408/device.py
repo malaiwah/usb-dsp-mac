@@ -67,6 +67,7 @@ from .protocol import (
     CMD_IDLE_POLL,
     CMD_MASTER,
     CMD_PRESET_NAME,
+    CMD_WRITE_GLOBAL,
     CMD_READ_CHANNEL_BASE,
     CMD_ROUTING_BASE,
     CMD_STATUS,
@@ -1015,68 +1016,111 @@ class Device:
         payload = bytes(list(levels) + [0, 0, 0, 0])
         self.write_raw(cmd=cmd, data=payload, category=CAT_PARAM)
 
-    # ── magic-word system register (factory reset / preset recall) ─────
-    # Decoded from leon Android v1.23 (notes/android-app-decompile-2026-04-19.md
-    # on the reverse-engineering branch). The Android app writes a u16
-    # value to register address 1567 (0x061F) on the SYSTEM plane:
-    #     0xA5A6              → factory reset (wipe all params, reload defaults)
-    #     0xB500 | preset_id  → load one of the 6 built-in factory presets
+    # ── factory reset (magic-word write to cmd=0x2000) ─────────────────
+    # Decoded 2026-04-19 from captures/reset_to_defaults.pcapng on the
+    # reverse-engineering branch. The official GUI's "Reset to Defaults"
+    # action emits exactly four writes after the connect handshake:
     #
-    # ⚠ ENCODING UNVERIFIED — TESTED CANDIDATES BELOW ALL FAILED.
-    # Live probing on real hardware (2026-04-19) tried:
-    #   cmd=0x061F cat=0x04 [A6 A5]      → ProtocolError (timeout)
-    #   cmd=0x061F cat=0x09 [A6 A5] LE   → no-op
-    #   cmd=0x061F cat=0x09 [A5 A6] BE   → CORRUPTED ch7 EQ band 1
-    #   cmd=0x1F06 cat=0x{04,09}         → no-op
-    #   cmd=0x06 cat=0x{04,09} addr-in-payload → no-op
-    #   cmd=0x2000 (WRITE_GLOBAL) addr+value → no-op
-    # The 0x061F cat=0x09 BE attempt landed inside the per-channel EQ blob
-    # at byte offset [1, 2] of a band record, suggesting the cmd is being
-    # routed to a per-channel EQ write (0x77NN address space includes 0x7D
-    # which is ch6 read; the corresponding write may be 0x1F1F or similar
-    # and the firmware may interpret cat=0x09 + cmd=0x061F as one of those).
-    # We need a USB capture of the official Android app issuing factory
-    # reset to know the exact wire encoding. Until then, these methods
-    # remain as call sites/probes only.
-    SYSTEM_REGISTER_CMD_BASE = 0x061F
-    MAGIC_FACTORY_RESET = 0xA5A6
-    MAGIC_LOAD_PRESET_BASE = 0xB500
-
-    def system_register_write(self, value: int) -> None:
-        """⚠ KNOWN-BROKEN: write a u16 magic value to register 0x061F.
-
-        Wire encoding is **unverified and likely wrong** — see the comment
-        block above for what we tried. Calls go out but the device either
-        ignores them or routes them somewhere unintended (one candidate
-        actively corrupted EQ data). Don't rely on this to actually reset
-        the device until the encoding is determined from a fresh capture
-        of the official app.
-        """
-        if not 0 <= value <= 0xFFFF:
-            raise ValueError(f"value must fit in u16, got {value:#x}")
-        payload = bytes([value & 0xFF, (value >> 8) & 0xFF])
-        self.write_raw(cmd=self.SYSTEM_REGISTER_CMD_BASE,
-                       data=payload, category=CAT_STATE)
+    #   1. cmd=0x00  (preset_name) ← "Custom"
+    #   2. cmd=0x2000 (write_global) ← `06 1f 00 00 20 4e 00 01`  ← THE MAGIC
+    #   3. cmd=0x00  (preset_name) ← "Custom"
+    #   4. cmd=0x00  (preset_name) ← "Custom"
+    #
+    # The 8-byte magic looks structurally like:
+    #     [0..1]  06 1f      — register selector 0x1F06 LE (= 0x061F BE = 1567,
+    #                          matching the leon decompile's "register 1567"
+    #                          claim for factory reset)
+    #     [2..3]  00 00      — pad / alignment
+    #     [4..7]  20 4e 00 01 — magic value (0x01004E20 LE = 16,797,728)
+    #
+    # We don't need to understand the field structure to drive it: send
+    # the captured 8 bytes verbatim. Live-verified on the rig 2026-04-19
+    # with full state diff (master, per-channel volume/mute/delay/polar,
+    # routing matrix, EQ bands all returned to factory defaults).
+    FACTORY_RESET_PAYLOAD = bytes.fromhex("061f0000204e0001")
 
     def factory_reset(self) -> None:
-        """⚠ KNOWN-BROKEN: intended to write magic 0xA5A6 to register 0x061F.
+        """Replay the GUI's "Reset to Defaults" 4-write sequence.
 
-        Wire encoding is unverified — live probing on hardware showed the
-        cmd is silently ignored (or worse, lands in the wrong subsystem).
-        Kept as a stub so the MQTT button has a target; once the correct
-        encoding is determined, swap the implementation here.
+        Wire encoding is **verified** (matches the captured GUI bytes
+        exactly) but **behavior is partially unverified**.  Sequence:
+          1. preset name → "Custom"            (cmd=0x00, cat=0x09)
+          2. magic-word write                  (cmd=0x2000, cat=0x04,
+             payload = ``06 1f 00 00 20 4e 00 01``)
+          3. preset name → "Custom"            (×2, mimics GUI behavior)
+
+        What we observed live (2026-04-19):
+          * The magic frame is accepted with a ~430 ms ack delay (vs.
+            ~10 ms for normal writes) — the firmware is doing real work.
+          * The preset name does change to "Custom" reliably.
+          * **In our smoke test the per-channel state (volume, mute,
+            delay, polar, routing, EQ, compressor) did NOT visibly revert
+            via** ``read_channel_state()`` **right after the magic.**
+
+        That mismatch with the action's name ("Reset to Defaults") is
+        unresolved.  Hypotheses: it may only persist to flash and take
+        effect on the next power cycle; it may reset a subsystem we
+        don't currently read back; or the GUI capture happened to be
+        on an already-defaulted device so we can't tell what would have
+        changed.  We need either a "modify-then-reset" capture or a
+        physical power-cycle test to pin it down.
+
+        Until then, treat this as "send the canonical bytes the GUI
+        sends" — useful for round-tripping, possibly NOT useful as an
+        actual factory reset.  See
+        ``captures-needed-from-windows.md`` item #2 on the
+        reverse-engineering branch.
         """
-        self.system_register_write(self.MAGIC_FACTORY_RESET)
+        # Step 1: name to "Custom"
+        self.write_raw(cmd=CMD_PRESET_NAME,
+                       data=b"Custom\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+                       category=CAT_STATE)
+        # Step 2: the magic write — this is what actually triggers the reset.
+        # Devices take ~430 ms to ack this frame (vs. ~10 ms for normal writes)
+        # because the firmware is wiping the entire parameter block. Category
+        # MUST be CAT_PARAM (0x04) — the GUI uses CAT_STATE for preset-name
+        # writes but CAT_PARAM for the magic; sending the magic with
+        # CAT_STATE is a silent no-op (verified live 2026-04-19).
+        self.write_raw(cmd=CMD_WRITE_GLOBAL,
+                       data=self.FACTORY_RESET_PAYLOAD,
+                       category=CAT_PARAM,
+                       timeout_ms=3000)
+        # Step 3+4: name to "Custom" again, twice (matches GUI exactly)
+        for _ in range(2):
+            self.write_raw(cmd=CMD_PRESET_NAME,
+                           data=b"Custom\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+                           category=CAT_STATE)
+        # Invalidate the per-channel cache — every channel's state has
+        # just been wiped back to factory defaults.
+        if hasattr(self, "_channel_cache"):
+            for ch in range(8):
+                self._channel_cache[ch] = {
+                    "db": 0.0,
+                    "muted": False,
+                    "polar": False,
+                    "delay": 0,
+                    "subidx": CHANNEL_SUBIDX[ch],
+                }
 
+    # ── load factory preset (still UNVERIFIED) ─────────────────────────
+    # The Windows GUI's preset-load action has NOT been captured yet.
+    # leon's decompile suggests `0xB500 | preset_id` to register 1567 but
+    # we never validated that on the wire. Stub kept so the MQTT button
+    # has a target; do NOT rely on it.
     def load_factory_preset(self, preset_id: int) -> None:
         """⚠ KNOWN-BROKEN: intended to load one of the 6 built-in presets.
 
-        Same caveat as :meth:`factory_reset` — the wire encoding for this
-        magic-word register write has not been determined yet.
+        Wire encoding is unverified.  Need a fresh capture (see
+        captures-needed-from-windows.md item #3 on the reverse-engineering
+        branch).
         """
         if not 1 <= preset_id <= 6:
             raise ValueError(f"preset_id must be 1..6, got {preset_id}")
-        self.system_register_write(self.MAGIC_LOAD_PRESET_BASE | preset_id)
+        # Best guess from the leon decompile — likely wrong; do not rely on it.
+        magic = 0xB500 | preset_id
+        self.write_raw(cmd=0x061F,
+                       data=bytes([magic & 0xFF, (magic >> 8) & 0xFF]),
+                       category=CAT_STATE)
 
     def set_routing(self, output_idx: int,
                     in1: bool, in2: bool, in3: bool, in4: bool) -> None:

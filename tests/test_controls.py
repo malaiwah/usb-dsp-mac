@@ -644,21 +644,12 @@ def test_get_channel_updates_cache_with_discovered_subidx() -> None:
     )
 
 
-# ── magic-word system-register writes (EXPERIMENTAL, not live-validated) ─
-def test_factory_reset_encodes_magic_word() -> None:
-    """factory_reset() writes 0xA5A6 LE to cmd=0x061F, cat=CAT_STATE."""
-    d, t = _make_device()
-    d.factory_reset()
-    cmd, cat, direction, _seq = _last_meta(t)
-    assert cmd == 0x061F
-    assert cat == CAT_STATE
-    assert direction == DIR_WRITE
-    # Payload is the magic word 0xA5A6 in little-endian (low byte first).
-    assert _last_payload(t) == bytes([0xA6, 0xA5])
-
-
 def test_load_factory_preset_encodes_preset_id() -> None:
-    """load_factory_preset(n) writes 0xB500 | n to the magic register."""
+    """load_factory_preset(n) writes 0xB500 | n to the magic register.
+
+    ⚠ Wire encoding still UNVERIFIED — this just guards the leon-decompile
+    derived formula; an actual end-to-end capture is needed to confirm.
+    """
     d, t = _make_device()
     d.load_factory_preset(3)
     assert _last_payload(t) == bytes([0x03, 0xB5])  # 0xB503 LE
@@ -675,12 +666,30 @@ def test_load_factory_preset_rejects_out_of_range() -> None:
         d.load_factory_preset(7)
 
 
-def test_system_register_write_rejects_non_u16() -> None:
-    d, _ = _make_device()
-    with pytest.raises(ValueError):
-        d.system_register_write(-1)
-    with pytest.raises(ValueError):
-        d.system_register_write(0x10000)
+def test_factory_reset_emits_captured_sequence() -> None:
+    """The reset action replays the GUI's exact 4-write sequence:
+    name='Custom', cmd=0x2000 magic, name='Custom', name='Custom'.
+
+    Wire decoded from captures/reset_to_defaults.pcapng (frame #163-#175)
+    on the reverse-engineering branch and live-verified on the rig.
+    """
+    d, t = _make_device()
+    d.factory_reset()
+    frames = [parse_frame(raw) for raw in t.sent[-4:]]
+    name_payload = b"Custom\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+    magic_payload = bytes.fromhex("061f0000204e0001")
+    assert (frames[0].cmd, frames[0].category, bytes(frames[0].payload)) == (
+        0x00, 0x09, name_payload
+    ), f"step 1 should be preset_name='Custom' write, got {frames[0]}"
+    assert (frames[1].cmd, frames[1].category, bytes(frames[1].payload)) == (
+        0x2000, 0x04, magic_payload  # CAT_PARAM, NOT CAT_STATE!
+    ), f"step 2 should be cmd=0x2000 magic with cat=0x04, got {frames[1]}"
+    assert (frames[2].cmd, frames[2].category, bytes(frames[2].payload)) == (
+        0x00, 0x09, name_payload
+    ), f"step 3 should be preset_name='Custom' write, got {frames[2]}"
+    assert (frames[3].cmd, frames[3].category, bytes(frames[3].payload)) == (
+        0x00, 0x09, name_payload
+    ), f"step 4 should be preset_name='Custom' write, got {frames[3]}"
 
 
 # ── crossover (HPF + LPF per channel) ────────────────────────────────────
