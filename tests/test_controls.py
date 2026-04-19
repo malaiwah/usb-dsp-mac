@@ -108,6 +108,58 @@ def test_set_routing_matches_capture(out_idx, ins, expected_cmd,
     assert _last_payload(t) == expected
 
 
+@pytest.mark.parametrize(
+    "out_idx,levels,expected_cmd,expected_payload_hex",
+    [
+        # 0x32 = 50% (= -6 dB) on IN1 only
+        (0, [0x32, 0, 0, 0], 0x2100, "32 00 00 00 00 00 00 00"),
+        # Mixed levels across all 4 inputs
+        (3, [100, 50, 25, 200], 0x2103, "64 32 19 c8 00 00 00 00"),
+        # Max u8 = +8 dB boost
+        (1, [0xFF, 0xFF, 0, 0], 0x2101, "ff ff 00 00 00 00 00 00"),
+    ],
+)
+def test_set_routing_levels_arbitrary_u8(out_idx, levels, expected_cmd,
+                                          expected_payload_hex) -> None:
+    """Verify set_routing_levels writes arbitrary u8 levels per cell.
+
+    Empirically validated: cell value is a linear amplitude scalar; values
+    above 100 boost the signal up to +8 dB at 0xFF (see
+    tests/loopback/test_routing_percentage.py for the live measurement).
+    """
+    d, t = _make_device()
+    d.set_routing_levels(out_idx, levels)
+    cmd, cat, direction, seq = _last_meta(t)
+    assert cmd == expected_cmd
+    assert cat == CAT_PARAM
+    assert direction == DIR_WRITE
+    assert seq == 0
+    expected = bytes.fromhex(expected_payload_hex.replace(" ", ""))
+    assert _last_payload(t) == expected
+
+
+def test_set_routing_levels_rejects_bad_args() -> None:
+    d, _ = _make_device()
+    with pytest.raises(ValueError, match="output_idx"):
+        d.set_routing_levels(8, [0, 0, 0, 0])
+    with pytest.raises(ValueError, match="must have 4"):
+        d.set_routing_levels(0, [100, 100, 100])
+    with pytest.raises(ValueError, match="out of u8 range"):
+        d.set_routing_levels(0, [256, 0, 0, 0])
+    with pytest.raises(ValueError, match="out of u8 range"):
+        d.set_routing_levels(0, [-1, 0, 0, 0])
+
+
+def test_set_routing_bool_calls_set_routing_levels() -> None:
+    """The bool wrapper should produce the same wire bytes as a direct
+    set_routing_levels call with the same intent."""
+    d1, t1 = _make_device()
+    d1.set_routing(0, in1=True, in2=False, in3=True, in4=False)
+    d2, t2 = _make_device()
+    d2.set_routing_levels(0, [100, 0, 100, 0])
+    assert _last_payload(t1) == _last_payload(t2)
+
+
 # ── per-channel volume + mute ───────────────────────────────────────────
 @pytest.mark.parametrize(
     "channel,db,muted,expected_cmd,expected_payload_hex",
@@ -152,6 +204,49 @@ def test_channel_volume_clamps_below_negative_60() -> None:
     p = _last_payload(t)
     vol = int.from_bytes(p[2:4], "little")
     assert vol == 0
+
+
+def test_set_channel_polar_writes_byte1() -> None:
+    """Verify polar=True flips byte[1] of the cmd=0x1FNN payload.
+
+    Empirically validated on real hardware: byte[1] = 1 inverts the channel's
+    output by 180° (see tests/loopback/test_phase_invert.py).
+    """
+    d, t = _make_device()
+    d.set_channel(0, db=0.0, muted=False, polar=False)
+    payload_off = _last_payload(t)
+    assert payload_off[1] == 0, f"polar=False should leave byte[1]=0, got {payload_off[1]}"
+
+    d, t = _make_device()
+    d.set_channel(0, db=0.0, muted=False, polar=True)
+    payload_on = _last_payload(t)
+    assert payload_on[1] == 1, f"polar=True should set byte[1]=1, got {payload_on[1]}"
+    # All other bytes match the polar-off payload
+    assert payload_on[0] == payload_off[0]
+    assert payload_on[2:] == payload_off[2:]
+
+
+def test_set_channel_polar_preserves_volume_and_mute() -> None:
+    """set_channel_polar should keep db/muted/delay from the cache."""
+    d, t = _make_device()
+    d.set_channel(2, db=-12.0, muted=True, delay_samples=24)
+    d.set_channel_polar(2, polar=True)
+    p = _last_payload(t)
+    assert p[0] == 0  # still muted
+    assert p[1] == 1  # polar now on
+    assert int.from_bytes(p[2:4], "little") == 480  # vol = -12 dB raw
+    assert int.from_bytes(p[4:6], "little") == 24   # delay
+    assert p[7] == 0x03  # subidx for ch2
+
+
+def test_set_channel_polar_none_preserves_existing() -> None:
+    """polar=None (default) must NOT silently flip polar back to False."""
+    d, t = _make_device()
+    d.set_channel(0, db=0.0, muted=False, polar=True)
+    # Now adjust volume without specifying polar — should stay True
+    d.set_channel_volume(0, db=-6.0)
+    p = _last_payload(t)
+    assert p[1] == 1, "set_channel_volume must not reset polar"
 
 
 def test_channel_subindex_is_correct_per_cmd() -> None:
@@ -547,3 +642,231 @@ def test_get_channel_updates_cache_with_discovered_subidx() -> None:
     assert payload[7] == non_default_si, (
         f"set_channel must preserve discovered subidx=0x12, got {payload[7]:#04x}"
     )
+
+
+# ── magic-word system-register writes (EXPERIMENTAL, not live-validated) ─
+def test_factory_reset_encodes_magic_word() -> None:
+    """factory_reset() writes 0xA5A6 LE to cmd=0x061F, cat=CAT_STATE."""
+    d, t = _make_device()
+    d.factory_reset()
+    cmd, cat, direction, _seq = _last_meta(t)
+    assert cmd == 0x061F
+    assert cat == CAT_STATE
+    assert direction == DIR_WRITE
+    # Payload is the magic word 0xA5A6 in little-endian (low byte first).
+    assert _last_payload(t) == bytes([0xA6, 0xA5])
+
+
+def test_load_factory_preset_encodes_preset_id() -> None:
+    """load_factory_preset(n) writes 0xB500 | n to the magic register."""
+    d, t = _make_device()
+    d.load_factory_preset(3)
+    assert _last_payload(t) == bytes([0x03, 0xB5])  # 0xB503 LE
+    cmd, cat, _dir, _seq = _last_meta(t)
+    assert cmd == 0x061F
+    assert cat == CAT_STATE
+
+
+def test_load_factory_preset_rejects_out_of_range() -> None:
+    d, _ = _make_device()
+    with pytest.raises(ValueError):
+        d.load_factory_preset(0)
+    with pytest.raises(ValueError):
+        d.load_factory_preset(7)
+
+
+def test_system_register_write_rejects_non_u16() -> None:
+    d, _ = _make_device()
+    with pytest.raises(ValueError):
+        d.system_register_write(-1)
+    with pytest.raises(ValueError):
+        d.system_register_write(0x10000)
+
+
+# ── crossover (HPF + LPF per channel) ────────────────────────────────────
+@pytest.mark.parametrize(
+    "channel,hpf_freq,hpf_filter,hpf_slope,lpf_freq,lpf_filter,lpf_slope,"
+    "expected_cmd,expected_payload_hex",
+    [
+        # Hardware default — 20 Hz BW 12dB / 20 kHz BW 12dB
+        # Verified live 2026-04-19 against ch1 blob[254..261] = 14000001204e0001
+        (0, 20, 0, 1, 20000, 0, 1, 0x12000, "14 00 00 01 20 4e 00 01"),
+        # Probed live: HPF 100Hz BW 24dB / LPF 8000Hz LR 48dB → blob = 64000003401f0207
+        (0, 100, 0, 3, 8000, 2, 7, 0x12000, "64 00 00 03 40 1f 02 07"),
+        # Channel index lands in low byte: 0x12000..0x12007
+        (7, 250, 1, 2, 12000, 2, 5, 0x12007, "fa 00 01 02 e0 2e 02 05"),
+        # Slope value 8 = filter disabled (max valid slope byte)
+        (3, 80, 0, 8, 16000, 0, 8, 0x12003, "50 00 00 08 80 3e 00 08"),
+    ],
+)
+def test_set_crossover_matches_capture(
+    channel, hpf_freq, hpf_filter, hpf_slope,
+    lpf_freq, lpf_filter, lpf_slope,
+    expected_cmd, expected_payload_hex,
+) -> None:
+    d, t = _make_device()
+    d.set_crossover(channel, hpf_freq, hpf_filter, hpf_slope,
+                    lpf_freq, lpf_filter, lpf_slope)
+    cmd, cat, direction, seq = _last_meta(t)
+    assert cmd == expected_cmd
+    assert cat == CAT_PARAM
+    assert direction == DIR_WRITE
+    assert seq == 0  # WRITES use seq=0
+    expected = bytes.fromhex(expected_payload_hex.replace(" ", ""))
+    assert _last_payload(t) == expected
+
+
+def test_set_crossover_rejects_bad_args() -> None:
+    d, _ = _make_device()
+    # channel range
+    with pytest.raises(ValueError, match="channel"):
+        d.set_crossover(8, 20, 0, 1, 20000, 0, 1)
+    with pytest.raises(ValueError, match="channel"):
+        d.set_crossover(-1, 20, 0, 1, 20000, 0, 1)
+    # freq must fit in u16
+    with pytest.raises(ValueError, match="hpf_freq"):
+        d.set_crossover(0, 0x10000, 0, 1, 20000, 0, 1)
+    with pytest.raises(ValueError, match="lpf_freq"):
+        d.set_crossover(0, 20, 0, 1, -1, 0, 1)
+    # filter must be 0..3
+    with pytest.raises(ValueError, match="hpf_filter"):
+        d.set_crossover(0, 20, 4, 1, 20000, 0, 1)
+    with pytest.raises(ValueError, match="lpf_filter"):
+        d.set_crossover(0, 20, 0, 1, 20000, -1, 1)
+    # slope must be 0..8
+    with pytest.raises(ValueError, match="hpf_slope"):
+        d.set_crossover(0, 20, 0, 9, 20000, 0, 1)
+    with pytest.raises(ValueError, match="lpf_slope"):
+        d.set_crossover(0, 20, 0, 1, 20000, 0, -1)
+
+
+def test_set_crossover_constants_match_blob_decode() -> None:
+    """Sanity — the filter-type and slope constants on Device match what's
+    documented in the blob parser. The Android-app decompile only knew
+    types 0..2; type=3 ("Defeat" in the Windows GUI) was identified by
+    Scarlett-loopback discrete-tone characterization (2026-04-19) as
+    aliasing Linkwitz-Riley — see test_crossover_characterization.py."""
+    assert Device.HPF_LPF_FILTER_BUTTERWORTH == 0
+    assert Device.HPF_LPF_FILTER_BESSEL == 1
+    assert Device.HPF_LPF_FILTER_LR == 2
+    assert Device.HPF_LPF_FILTER_DEFEAT == 3
+    assert Device.HPF_LPF_SLOPE_OFF == 8
+
+
+# ── parametric EQ (10 bands per channel) ─────────────────────────────────
+@pytest.mark.parametrize(
+    "channel,band,freq,gain_db,bw_byte,expected_cmd,expected_payload_hex",
+    [
+        # Band 5 default-Q (b4=0x34) at +12 dB / 1000 Hz on ch1 — exactly
+        # what the Scarlett-loopback probe (_probe_eq.py) wrote.  The
+        # device returns this same payload byte-for-byte from a follow-up
+        # read_channel_state() at blob[5*8 .. 5*8+8].  Verified live
+        # 2026-04-19.
+        (1, 5, 1000, +12.0, 0x34, 0x10501, "e8 03 d0 02 34 00 00 00"),
+        # Half-Q (b4=0x1A) — narrower peak. Same fc/gain.
+        (1, 5, 1000, +12.0, 0x1A, 0x10501, "e8 03 d0 02 1a 00 00 00"),
+        # Double-Q (b4=0x68) — wider peak.
+        (1, 5, 1000, +12.0, 0x68, 0x10501, "e8 03 d0 02 68 00 00 00"),
+        # Default firmware band 0: 31 Hz / 0 dB / b4=0x34 on ch0
+        (0, 0, 31, 0.0, 0x34, 0x10000, "1f 00 58 02 34 00 00 00"),
+        # cmd encoding sweep: band index lives in HIGH byte, channel in LOW byte.
+        # gain raw = (dB×10) + 600  →  -6 dB = 540 = 0x021c, +3 dB = 630 = 0x0276
+        (3, 9, 16000, -6.0, 0x34, 0x10903, "80 3e 1c 02 34 00 00 00"),
+        (7, 0, 31, +3.0, 0x34, 0x10007, "1f 00 76 02 34 00 00 00"),
+    ],
+)
+def test_set_eq_band_matches_capture(
+    channel, band, freq, gain_db, bw_byte,
+    expected_cmd, expected_payload_hex,
+) -> None:
+    """The 8-byte payload mirrors blob[band*8 .. band*8+8] in the channel
+    state struct; live-validated 2026-04-19 by writing then reading back
+    via read_channel_state().  See tests/loopback/_probe_eq.py."""
+    d, t = _make_device()
+    d.set_eq_band(channel, band, freq, gain_db, bandwidth_byte=bw_byte)
+    cmd, cat, direction, seq = _last_meta(t)
+    assert cmd == expected_cmd
+    assert cat == CAT_PARAM
+    assert direction == DIR_WRITE
+    assert seq == 0
+    expected = bytes.fromhex(expected_payload_hex.replace(" ", ""))
+    assert _last_payload(t) == expected
+
+
+def test_set_eq_band_q_shorthand_matches_byte() -> None:
+    """The q= keyword and bandwidth_byte= keyword should produce equivalent
+    frames when q ↔ b4 round-trips exactly.  q=5 → b4 = round(256/5) = 51."""
+    d_q, t_q = _make_device()
+    d_b, t_b = _make_device()
+    d_q.set_eq_band(channel=1, band=5, freq_hz=1000, gain_db=+12, q=5)
+    d_b.set_eq_band(channel=1, band=5, freq_hz=1000, gain_db=+12,
+                    bandwidth_byte=51)
+    assert _last_payload(t_q) == _last_payload(t_b)
+    assert _last_meta(t_q) == _last_meta(t_b)
+
+
+def test_set_eq_band_default_q_uses_firmware_default() -> None:
+    """Calling without q= or bandwidth_byte= should write b4=0x34, matching
+    every WRITE seen in captures/full-sequence.pcapng."""
+    d, t = _make_device()
+    d.set_eq_band(channel=1, band=5, freq_hz=1000, gain_db=+12)
+    payload = _last_payload(t)
+    assert payload[4] == 0x34
+
+
+def test_set_eq_band_rejects_bad_args() -> None:
+    d, _ = _make_device()
+    with pytest.raises(ValueError, match="channel"):
+        d.set_eq_band(8, 0, 1000, 0)
+    with pytest.raises(ValueError, match="channel"):
+        d.set_eq_band(-1, 0, 1000, 0)
+    with pytest.raises(ValueError, match="band"):
+        d.set_eq_band(0, 10, 1000, 0)
+    with pytest.raises(ValueError, match="band"):
+        d.set_eq_band(0, -1, 1000, 0)
+    with pytest.raises(ValueError, match="freq_hz"):
+        d.set_eq_band(0, 0, 0x10000, 0)
+    with pytest.raises(ValueError, match="freq_hz"):
+        d.set_eq_band(0, 0, -1, 0)
+    with pytest.raises(ValueError, match="bandwidth_byte"):
+        d.set_eq_band(0, 0, 1000, 0, bandwidth_byte=0)
+    with pytest.raises(ValueError, match="bandwidth_byte"):
+        d.set_eq_band(0, 0, 1000, 0, bandwidth_byte=256)
+    # mutual exclusion
+    with pytest.raises(ValueError, match="q OR bandwidth_byte"):
+        d.set_eq_band(0, 0, 1000, 0, q=5, bandwidth_byte=51)
+    # q must be positive
+    with pytest.raises(ValueError, match="q"):
+        Device.q_to_bandwidth_byte(0)
+    with pytest.raises(ValueError, match="q"):
+        Device.q_to_bandwidth_byte(-1)
+
+
+def test_eq_q_byte_round_trip_within_resolution() -> None:
+    """The Q ↔ b4 reciprocal mapping (Q ≈ 256 / b4) round-trips within the
+    granularity of an 8-bit byte for Q ∈ [1, 100].  Documents that Q < 1
+    saturates to b4=255 (Q ≈ 1.004) and Q > 256 isn't reachable."""
+    # Practical range: round-trip should match within ±10% (limited by b4
+    # being a single byte).
+    for q in (1.5, 2, 3, 5, 10, 20):
+        b4 = Device.q_to_bandwidth_byte(q)
+        q_back = Device.bandwidth_byte_to_q(b4)
+        assert abs(q_back - q) / q < 0.10, (
+            f"Q={q} round-trip too lossy: b4={b4} → Q≈{q_back}")
+    # Saturation: Q < 1 floors at b4=255 → Q≈1.004
+    assert Device.q_to_bandwidth_byte(0.5) == 255
+    assert Device.q_to_bandwidth_byte(1.0) == 255
+    # Very high Q clamps to b4=1 → Q=256 (max)
+    assert Device.q_to_bandwidth_byte(1000) == 1
+
+
+def test_set_eq_band_default_freqs_match_blob() -> None:
+    """The 10 default centre frequencies match what a freshly-defaulted
+    channel state blob carries (verified live: ch1 blob[0..79] decoded to
+    31 / 65 / 125 / 250 / 500 / 1000 / 2000 / 4000 / 8000 / 16000 Hz)."""
+    assert Device.EQ_DEFAULT_FREQS_HZ == (
+        31, 65, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
+    assert Device.EQ_BAND_COUNT == 10
+    # The fixed-point Q constant is exactly 256 (= 2⁸), confirming the
+    # firmware's reciprocal-Q encoding.
+    assert Device.EQ_Q_BW_CONSTANT == 256.0

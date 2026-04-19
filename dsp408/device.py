@@ -60,6 +60,11 @@ from .protocol import (
     CMD_ROUTING_BASE,
     CMD_STATUS,
     CMD_WRITE_CHANNEL_BASE,
+    CMD_WRITE_CROSSOVER_BASE,
+    CMD_WRITE_EQ_BAND_BASE,
+    EQ_BAND_COUNT,
+    EQ_DEFAULT_FREQS_HZ,
+    EQ_Q_BW_CONSTANT,
     DIR_CMD,
     DIR_RESP,
     DIR_WRITE,
@@ -698,11 +703,13 @@ class Device:
             )
             return dict(self._channel_cache[channel])
 
-        # Store discovered subidx so set_channel() writes back the correct
-        # DSP type rather than the CHANNEL_SUBIDX table default.
+        # Store discovered subidx + polar so set_channel() writes back the
+        # correct DSP type and preserves the user's phase setting (rather than
+        # silently flipping it back to 0).
         self._channel_cache[channel] = {
             "db": result["db"],
             "muted": result["muted"],
+            "polar": bool(result.get("polar", False)),
             "delay": result["delay"],
             "subidx": result["subidx"],
         }
@@ -786,10 +793,24 @@ class Device:
     @staticmethod
     def _channel_payload(channel: int, db: float, muted: bool,
                          delay_samples: int = 0,
-                         sub_index: int | None = None) -> bytes:
-        """Build the 8-byte per-channel volume/mute write payload.
+                         sub_index: int | None = None,
+                         polar: bool = False) -> bytes:
+        """Build the 8-byte per-channel write payload (cmd=0x1FNN).
+
+        Layout (verified live on hardware, matches blob[246..253] read-back):
+
+        .. code-block:: text
+
+            [0] mute      0=muted, 1=audible (en_bit, INVERTED from leon)
+            [1] polar     0=normal, 1=phase-inverted (180°)  ← was always 0
+            [2..3] gain_le16  raw = (dB×10)+600
+            [4..5] delay_le16 samples
+            [6] eq_mode   reserved/0 in our writes today
+            [7] subidx    DSP channel-type / speaker-role
 
         Args:
+            polar: 180° phase invert. Empirically validated via Scarlett
+                loopback on real hardware (Δphase = ±180° with 6° jitter).
             sub_index: DSP channel-type byte (blob[253]).  Pass the value
                 previously returned by ``get_channel()["subidx"]`` to
                 preserve the firmware's type assignment.  If None, falls
@@ -802,9 +823,10 @@ class Device:
         vol = max(CHANNEL_VOL_MIN, min(CHANNEL_VOL_MAX,
                                        round(db * 10 + CHANNEL_VOL_OFFSET)))
         en_bit = 0 if muted else 1
+        pol_bit = 1 if polar else 0
         si = sub_index if sub_index is not None else CHANNEL_SUBIDX[channel]
         return bytes([
-            en_bit, 0,
+            en_bit, pol_bit,
             vol & 0xFF, (vol >> 8) & 0xFF,
             delay_samples & 0xFF, (delay_samples >> 8) & 0xFF,
             0, si,
@@ -828,6 +850,7 @@ class Device:
                 {
                     "db": 0.0,
                     "muted": False,
+                    "polar": False,
                     "delay": 0,
                     "subidx": CHANNEL_SUBIDX[ch],  # updated by get_channel()
                 }
@@ -835,14 +858,39 @@ class Device:
             ]
 
     def set_channel(self, channel: int, db: float, muted: bool,
-                    delay_samples: int = 0) -> None:
-        """Write per-channel volume + mute + delay in one frame.
+                    delay_samples: int = 0,
+                    polar: bool | None = None) -> None:
+        """Write per-channel volume + mute + delay (+ optional polar) in one frame.
 
         Uses the subidx (DSP channel-type) from the in-memory cache.  If
         ``get_channel()`` has been called before, the cache holds the actual
         device type (possibly non-default); otherwise falls back to
         ``CHANNEL_SUBIDX[channel]``.  Preserving the correct subidx prevents
         accidentally overwriting the firmware's DSP type assignment.
+
+        ⚠ **Startup write-drop quirk** (verified live 2026-04-19):
+            The firmware silently drops the first ~5–6 cmd=0x1FNN writes
+            that arrive faster than it can process — back-to-back writes
+            with no intervening reads/sleeps lose their early entries even
+            though every write returns a clean ACK.  Master writes and
+            non-channel commands do NOT count toward this quota.
+
+            Mitigation pattern (used by every loopback test): warm up by
+            doing 8 set+read cycles before relying on writes to land::
+
+                for ch in range(8):
+                    dsp.set_channel(ch, db=0.0, muted=False)
+                # then any audio measurement / time.sleep(>~1s) / per-ch
+                # readback gives the firmware time to drain its queue.
+
+            What does NOT work: 8 back-to-back set_channel() calls with
+            no reads or sleeps in between — the firmware processes the
+            queue in bulk and drops everything past its first slot.
+
+        Args:
+            polar: True/False to set/clear 180° phase invert; None (default)
+                preserves the cached polar value so callers that don't care
+                about polar don't accidentally flip it.
         """
         self._channel_cache_init()
         # Use the discovered subidx (from get_channel readback), falling back
@@ -850,17 +898,27 @@ class Device:
         # for channels whose subidx is 0x00 (uninitialized firmware struct).
         cached_si = self._channel_cache[channel].get("subidx", 0)
         si = cached_si if cached_si != 0 else CHANNEL_SUBIDX[channel]
+        # Default polar to cached value (preserve unless explicitly changed).
+        eff_polar = (self._channel_cache[channel].get("polar", False)
+                     if polar is None else bool(polar))
         payload = self._channel_payload(channel, db, muted, delay_samples,
-                                        sub_index=si)
+                                        sub_index=si, polar=eff_polar)
         cmd = CMD_WRITE_CHANNEL_BASE + channel  # 0x1f00..0x1f07
         self.write_raw(cmd=cmd, data=payload, category=CAT_PARAM)
-        # Update cache (preserve subidx so the next set call also uses it).
+        # Update cache (preserve subidx + new polar for next set call).
         self._channel_cache[channel] = {
             "db": float(db),
             "muted": bool(muted),
+            "polar": eff_polar,
             "delay": int(delay_samples),
             "subidx": si,
         }
+
+    def set_channel_polar(self, channel: int, polar: bool) -> None:
+        """Toggle 180° phase invert on the channel, preserving volume/mute/delay."""
+        self._channel_cache_init()
+        c = self._channel_cache[channel]
+        self.set_channel(channel, c["db"], c["muted"], c["delay"], polar=polar)
 
     def set_channel_volume(self, channel: int, db: float) -> None:
         """Set per-channel volume in dB (-60..0), preserving mute + delay."""
@@ -887,22 +945,317 @@ class Device:
         return dict(self._channel_cache[channel])
 
     # ── routing matrix ─────────────────────────────────────────────────
-    def set_routing(self, output_idx: int,
-                    in1: bool, in2: bool, in3: bool, in4: bool) -> None:
-        """Set which inputs feed a given output.
+    def set_routing_levels(self, output_idx: int,
+                           levels: list[int] | tuple[int, ...]) -> None:
+        """Set per-input mix levels for one output channel.
 
-        `output_idx` is 0..7 (Out1..Out8). Each bool flips one input on
-        (0x64) or off (0x00).
+        Each routing cell is a u8 linear-amplitude scalar (verified live
+        on real hardware via Scarlett loopback test in
+        ``tests/loopback/test_routing_percentage.py``):
+
+          * 0   → off (silent)
+          * 100 → unity gain (the value our boolean ``set_routing()`` writes)
+          * 50  → -6 dB
+          * 25  → -12 dB
+          * 200 → +6 dB  (firmware allows BOOST above unity!)
+          * 255 → +8.1 dB (max u8 = max headroom, undocumented)
+
+        The Windows GUI never uses values other than 0/100, but the
+        firmware accepts the full 0..255 range with a precise
+        ``20·log10(level/100)`` dB curve.
+
+        Args:
+            output_idx: 0..7 (corresponds to OUT 1..OUT 8)
+            levels: 4 ints in [0, 255], one per IN1..IN4
+
+        Raises:
+            ValueError: output_idx out of range, or any level out of [0, 255].
         """
         if not 0 <= output_idx <= 7:
             raise ValueError(f"output_idx must be in 0..7, got {output_idx}")
+        if len(levels) != 4:
+            raise ValueError(f"levels must have 4 entries, got {len(levels)}")
+        for i, lvl in enumerate(levels):
+            if not 0 <= lvl <= 255:
+                raise ValueError(
+                    f"levels[{i}]={lvl} out of u8 range [0, 255]")
         cmd = CMD_ROUTING_BASE + output_idx  # 0x2100..0x2107
-        b = ROUTING_ON
-        o = ROUTING_OFF
+        # Bytes 4..7 are reserved/zero in the wire format.
+        payload = bytes(list(levels) + [0, 0, 0, 0])
+        self.write_raw(cmd=cmd, data=payload, category=CAT_PARAM)
+
+    # ── magic-word system register (factory reset / preset recall) ─────
+    # Decoded from leon Android v1.23 (notes/android-app-decompile-2026-04-19.md
+    # on the reverse-engineering branch). The Android app writes a u16
+    # value to register address 1567 (0x061F) on the SYSTEM plane:
+    #     0xA5A6              → factory reset (wipe all params, reload defaults)
+    #     0xB500 | preset_id  → load one of the 6 built-in factory presets
+    #
+    # ⚠ ENCODING UNVERIFIED — TESTED CANDIDATES BELOW ALL FAILED.
+    # Live probing on real hardware (2026-04-19) tried:
+    #   cmd=0x061F cat=0x04 [A6 A5]      → ProtocolError (timeout)
+    #   cmd=0x061F cat=0x09 [A6 A5] LE   → no-op
+    #   cmd=0x061F cat=0x09 [A5 A6] BE   → CORRUPTED ch7 EQ band 1
+    #   cmd=0x1F06 cat=0x{04,09}         → no-op
+    #   cmd=0x06 cat=0x{04,09} addr-in-payload → no-op
+    #   cmd=0x2000 (WRITE_GLOBAL) addr+value → no-op
+    # The 0x061F cat=0x09 BE attempt landed inside the per-channel EQ blob
+    # at byte offset [1, 2] of a band record, suggesting the cmd is being
+    # routed to a per-channel EQ write (0x77NN address space includes 0x7D
+    # which is ch6 read; the corresponding write may be 0x1F1F or similar
+    # and the firmware may interpret cat=0x09 + cmd=0x061F as one of those).
+    # We need a USB capture of the official Android app issuing factory
+    # reset to know the exact wire encoding. Until then, these methods
+    # remain as call sites/probes only.
+    SYSTEM_REGISTER_CMD_BASE = 0x061F
+    MAGIC_FACTORY_RESET = 0xA5A6
+    MAGIC_LOAD_PRESET_BASE = 0xB500
+
+    def system_register_write(self, value: int) -> None:
+        """⚠ KNOWN-BROKEN: write a u16 magic value to register 0x061F.
+
+        Wire encoding is **unverified and likely wrong** — see the comment
+        block above for what we tried. Calls go out but the device either
+        ignores them or routes them somewhere unintended (one candidate
+        actively corrupted EQ data). Don't rely on this to actually reset
+        the device until the encoding is determined from a fresh capture
+        of the official app.
+        """
+        if not 0 <= value <= 0xFFFF:
+            raise ValueError(f"value must fit in u16, got {value:#x}")
+        payload = bytes([value & 0xFF, (value >> 8) & 0xFF])
+        self.write_raw(cmd=self.SYSTEM_REGISTER_CMD_BASE,
+                       data=payload, category=CAT_STATE)
+
+    def factory_reset(self) -> None:
+        """⚠ KNOWN-BROKEN: intended to write magic 0xA5A6 to register 0x061F.
+
+        Wire encoding is unverified — live probing on hardware showed the
+        cmd is silently ignored (or worse, lands in the wrong subsystem).
+        Kept as a stub so the MQTT button has a target; once the correct
+        encoding is determined, swap the implementation here.
+        """
+        self.system_register_write(self.MAGIC_FACTORY_RESET)
+
+    def load_factory_preset(self, preset_id: int) -> None:
+        """⚠ KNOWN-BROKEN: intended to load one of the 6 built-in presets.
+
+        Same caveat as :meth:`factory_reset` — the wire encoding for this
+        magic-word register write has not been determined yet.
+        """
+        if not 1 <= preset_id <= 6:
+            raise ValueError(f"preset_id must be 1..6, got {preset_id}")
+        self.system_register_write(self.MAGIC_LOAD_PRESET_BASE | preset_id)
+
+    def set_routing(self, output_idx: int,
+                    in1: bool, in2: bool, in3: bool, in4: bool) -> None:
+        """Set which inputs feed a given output (boolean convenience wrapper).
+
+        Calls :meth:`set_routing_levels` with each True bool mapped to the
+        full-scale ``ROUTING_ON`` (= 100) and each False to ``ROUTING_OFF``
+        (= 0).  For partial / boosted levels use ``set_routing_levels``
+        directly.
+        """
+        levels = [
+            ROUTING_ON if in1 else ROUTING_OFF,
+            ROUTING_ON if in2 else ROUTING_OFF,
+            ROUTING_ON if in3 else ROUTING_OFF,
+            ROUTING_ON if in4 else ROUTING_OFF,
+        ]
+        self.set_routing_levels(output_idx, levels)
+
+    # ── crossover (HPF + LPF per channel) ──────────────────────────────
+    # Filter type values for blob[256] (HPF) and blob[260] (LPF).  The
+    # Windows GUI dropdown labels them "Butterworth / Bessel / Linkwitz-
+    # Riley / Defeat".  Empirically validated 2026-04-19 via Scarlett
+    # loopback + discrete-tone sweep — see
+    # tests/loopback/test_crossover_characterization.py and the saved
+    # response plot at docs/measurements/crossover_filter_types.png.
+    #
+    # Surprise finding: type=3 ("Defeat" in the UI) produces the IDENTICAL
+    # filter response as type=2 (Linkwitz-Riley) — same -3 dB knee, same
+    # -6 dB knee, same asymptotic slope, all within 0.3 dB measurement
+    # noise.  The Windows GUI exposes it as a separate option but the
+    # firmware aliases it to LR.
+    HPF_LPF_FILTER_BUTTERWORTH = 0
+    HPF_LPF_FILTER_BESSEL = 1
+    HPF_LPF_FILTER_LR = 2          # Linkwitz-Riley
+    HPF_LPF_FILTER_DEFEAT = 3      # Windows-UI label; aliases to LR in firmware
+
+    # Slope is dB/octave: 0..7 = 6/12/18/24/30/36/42/48 dB/oct.  Value 8
+    # bypasses the filter — the channel passes audio through with flat
+    # magnitude regardless of the freq parameter (verified live via
+    # discrete-tone sweep on the loopback rig: HPF slope=8 + LPF slope=8
+    # gives +2 dB ±0.1 across 50 Hz–10 kHz, identical to an explicitly
+    # wide-open Butterworth).  Hardware default = 1 (12 dB/oct).
+    HPF_LPF_SLOPE_OFF = 8
+
+    def set_crossover(
+        self,
+        channel: int,
+        hpf_freq: int,
+        hpf_filter: int,
+        hpf_slope: int,
+        lpf_freq: int,
+        lpf_filter: int,
+        lpf_slope: int,
+    ) -> None:
+        """Write the per-channel HPF + LPF crossover record in one frame.
+
+        Encoding decoded from ``captures/full-sequence.pcapng`` (Windows
+        DSP-408 V1.24 GUI changing filter types) and verified live on
+        real hardware 2026-04-19 — the 8-byte payload mirrors
+        ``blob[254..261]`` exactly, so a write here shows up surgically
+        at those offsets in the next ``read_channel_state()`` blob.
+
+        Args:
+            channel:    0..7 (output channel index).
+            hpf_freq:   high-pass cutoff in Hz, u16 (firmware default 20).
+            hpf_filter: 0=Butterworth, 1=Bessel, 2=Linkwitz-Riley,
+                        3=Defeat (Windows-UI label; aliases LR — see the
+                        ``HPF_LPF_FILTER_*`` class constants).
+            hpf_slope:  dB/octave step: 0=6, 1=12, 2=18, 3=24, 4=30,
+                        5=36, 6=42, 7=48; 8 bypasses the filter
+                        entirely (audio passes through flat regardless
+                        of ``hpf_freq``).
+            lpf_freq:   low-pass cutoff in Hz (firmware default 20000).
+            lpf_filter: same range as ``hpf_filter``.
+            lpf_slope:  same range as ``hpf_slope``.
+
+        Raises:
+            ValueError: any param out of range.
+        """
+        if not 0 <= channel <= 7:
+            raise ValueError(f"channel must be in 0..7, got {channel}")
+        for name, val in (("hpf_freq", hpf_freq), ("lpf_freq", lpf_freq)):
+            if not 0 <= val <= 0xFFFF:
+                raise ValueError(f"{name} must fit in u16, got {val}")
+        for name, val in (("hpf_filter", hpf_filter),
+                          ("lpf_filter", lpf_filter)):
+            if not 0 <= val <= 3:
+                raise ValueError(f"{name} must be 0..3, got {val}")
+        for name, val in (("hpf_slope", hpf_slope), ("lpf_slope", lpf_slope)):
+            if not 0 <= val <= 8:
+                raise ValueError(f"{name} must be 0..8, got {val}")
         payload = bytes([
-            b if in1 else o, b if in2 else o, b if in3 else o, b if in4 else o,
-            0, 0, 0, 0,
+            hpf_freq & 0xFF, (hpf_freq >> 8) & 0xFF,
+            hpf_filter, hpf_slope,
+            lpf_freq & 0xFF, (lpf_freq >> 8) & 0xFF,
+            lpf_filter, lpf_slope,
         ])
+        cmd = CMD_WRITE_CROSSOVER_BASE + channel  # 0x12000..0x12007
+        self.write_raw(cmd=cmd, data=payload, category=CAT_PARAM)
+
+    # ── parametric EQ (10 bands per channel) ────────────────────────────
+    # Live-validated 2026-04-19 via Scarlett loopback + pink-noise PSD
+    # ratio (see tests/loopback/_probe_eq_pink.py for the calibration
+    # script).  Each output channel has 10 peaking-EQ bands at default
+    # ISO octave centers ``EQ_DEFAULT_FREQS_HZ`` (31, 65, 125, 250, 500,
+    # 1000, 2000, 4000, 8000, 16000 Hz).  Each band has independent
+    # freq / gain / Q.
+    #
+    # Band-count limit (verified by _probe_eq_extra_bands.py):
+    #   * Bands 10..30 are silently ACKed by the firmware but produce
+    #     **no** acoustic effect — the Windows GUI's "10 bands" is the
+    #     real upper bound, not a UI limit.  Writes to higher band indices
+    #     don't fail but don't do anything either.
+    #
+    # Frequency / band-index independence (verified same probe):
+    #   * The 10 default centres are *defaults*, not constraints.  You
+    #     can put band 0 at 16 kHz and band 9 at 31 Hz and both peaks
+    #     appear at the requested fcs.  Bands are independent slots.
+    #
+    # The bandwidth byte is encoded as a fixed-point reciprocal of Q:
+    #
+    #     bandwidth_byte ≈ EQ_Q_BW_CONSTANT (= 256) / Q
+    #
+    # Measured peak BW₃ ↔ b4 across the validated b4∈[26..208] range:
+    #   b4= 26 → BW₃≈129 Hz (Q≈7.8) ;  b4= 52 → BW₃≈223 Hz (Q≈4.5, default)
+    #   b4=104 → BW₃≈410 Hz (Q≈2.5) ;  b4=208 → BW₃≈873 Hz (Q≈1.2)
+    # All peak gains land within ±0.1 dB of the requested value.
+    EQ_BAND_COUNT = EQ_BAND_COUNT
+    EQ_Q_BW_CONSTANT = EQ_Q_BW_CONSTANT
+    EQ_DEFAULT_FREQS_HZ = EQ_DEFAULT_FREQS_HZ
+
+    @staticmethod
+    def q_to_bandwidth_byte(q: float) -> int:
+        """Convert a desired Q to the firmware's bandwidth byte.
+
+        Returns an int clamped to 1..255 (the byte is unsigned and 0
+        would be a divide-by-zero in the reciprocal encoding).
+        """
+        if q <= 0:
+            raise ValueError(f"q must be positive, got {q}")
+        b4 = round(EQ_Q_BW_CONSTANT / q)
+        return max(1, min(255, b4))
+
+    @staticmethod
+    def bandwidth_byte_to_q(b4: int) -> float:
+        """Inverse of :meth:`q_to_bandwidth_byte`."""
+        if not 1 <= b4 <= 255:
+            raise ValueError(f"b4 must be 1..255, got {b4}")
+        return EQ_Q_BW_CONSTANT / b4
+
+    def set_eq_band(
+        self,
+        channel: int,
+        band: int,
+        freq_hz: int,
+        gain_db: float,
+        q: float | None = None,
+        *,
+        bandwidth_byte: int | None = None,
+    ) -> None:
+        """Write one parametric-EQ band on one output channel.
+
+        The encoding maps the GUI's "freq / gain / Q" controls onto an
+        8-byte payload mirrored at blob[band*8 .. band*8+8] in the
+        296-byte channel state struct (verified live: a write here shows
+        up surgically at those offsets in the next read_channel_state).
+
+        Args:
+            channel:  0..7 (output channel index).
+            band:     0..9 (band index; default centers in
+                      ``EQ_DEFAULT_FREQS_HZ``).
+            freq_hz:  band centre frequency in Hz, u16.
+            gain_db:  ±60 dB (clamped); raw = (dB×10) + 600.
+            q:        peaking-EQ quality factor.  Higher = narrower peak.
+                      The firmware default is ~5 (b4=0x34).  Mutually
+                      exclusive with ``bandwidth_byte``; if both are
+                      omitted the firmware default of b4=0x34 is used.
+            bandwidth_byte: raw byte [4] of the payload (1..255).
+                      Use this only if you need to write an explicit byte
+                      value (e.g. for replaying a captured frame).  Use
+                      ``q`` for normal API use.
+
+        Raises:
+            ValueError: any param out of range, or both q + bandwidth_byte
+                given.
+        """
+        if not 0 <= channel <= 7:
+            raise ValueError(f"channel must be in 0..7, got {channel}")
+        if not 0 <= band < EQ_BAND_COUNT:
+            raise ValueError(
+                f"band must be in 0..{EQ_BAND_COUNT - 1}, got {band}")
+        if not 0 <= freq_hz <= 0xFFFF:
+            raise ValueError(f"freq_hz must fit in u16, got {freq_hz}")
+        if q is not None and bandwidth_byte is not None:
+            raise ValueError("pass q OR bandwidth_byte, not both")
+        if bandwidth_byte is None:
+            b4 = self.q_to_bandwidth_byte(q) if q is not None else 0x34
+        else:
+            if not 1 <= bandwidth_byte <= 255:
+                raise ValueError(
+                    f"bandwidth_byte must be 1..255, got {bandwidth_byte}")
+            b4 = bandwidth_byte
+        raw = max(0, min(1200,
+                         round(gain_db * 10 + CHANNEL_VOL_OFFSET)))
+        payload = bytes([
+            freq_hz & 0xFF, (freq_hz >> 8) & 0xFF,
+            raw & 0xFF, (raw >> 8) & 0xFF,
+            b4, 0, 0, 0,
+        ])
+        cmd = CMD_WRITE_EQ_BAND_BASE + (band << 8) + channel
         self.write_raw(cmd=cmd, data=payload, category=CAT_PARAM)
 
     # ── one-shot snapshot ──────────────────────────────────────────────

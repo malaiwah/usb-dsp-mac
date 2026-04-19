@@ -24,7 +24,9 @@ Device specs (from the manual):
   * 10-band PEQ per output channel (bands 1 & 10 can be shelf LS/HS)
   * Independent HPF + LPF per channel, types: Linkwitz-Riley / Bessel /
     Butterworth, slopes: 6/12/18/24 dB/oct, freq 20 Hz – 20 kHz
-  * Per-channel delay (0–277 cm / 0–8.1471 ms, 1 cm steps)
+  * Per-channel delay — wire format is samples (u16). Firmware caps at
+    359 taps: that's 8.14 ms @ 44.1 kHz (matching the manual's "8.1471 ms /
+    277 cm" claim) but only 7.48 ms when the device runs at 48 kHz.
   * 4×8 input→output mixer matrix
   * 6 named presets (save / load / recall / delete)
   * Master volume + per-channel mute + per-channel phase invert

@@ -311,6 +311,41 @@ class DeviceWorker:
                 }
                 for n in range(1, 9)
             },
+            # Per-channel phase invert (polar) switches. byte[1] of cmd=0x1FNN.
+            # Validated live: tests/loopback/test_phase_invert.py.
+            **{
+                f"ch{n}_polar": {
+                    "p": "switch",
+                    "name": f"Channel {n} phase invert",
+                    "uniq_id": f"dsp408_{self.slug}_ch{n}_polar",
+                    "stat_t": self.t(f"ch{n}_polar/state"),
+                    "cmd_t": self.t(f"ch{n}_polar/set"),
+                    "pl_on": "ON",
+                    "pl_off": "OFF",
+                    "icon": "mdi:sine-wave",
+                    "ent_cat": "config",
+                }
+                for n in range(1, 9)
+            },
+            # Per-channel delay (samples). Firmware caps at 359 taps.
+            # Validated live: tests/loopback/test_delay_calibration.py.
+            **{
+                f"ch{n}_delay": {
+                    "p": "number",
+                    "name": f"Channel {n} delay",
+                    "uniq_id": f"dsp408_{self.slug}_ch{n}_delay",
+                    "stat_t": self.t(f"ch{n}_delay/state"),
+                    "cmd_t": self.t(f"ch{n}_delay/set"),
+                    "min": 0,
+                    "max": 359,
+                    "step": 1,
+                    "unit_of_meas": "samples",
+                    "icon": "mdi:timer-outline",
+                    "mode": "slider",
+                    "ent_cat": "config",
+                }
+                for n in range(1, 9)
+            },
             # Per-output input-routing switches: 8 outs × 4 ins = 32 switches.
             # `out{N}_in{M}` toggles whether IN<M> feeds Out<N>.
             **{
@@ -323,6 +358,55 @@ class DeviceWorker:
                     "pl_on": "ON",
                     "pl_off": "OFF",
                     "icon": "mdi:call-merge",
+                    "ent_cat": "config",
+                }
+                for n in range(1, 9)
+                for m in range(1, 5)
+            },
+            # ── ⚠ KNOWN-BROKEN: factory-preset / reset buttons ────────
+            # Wire encoding for the magic-word system-register write is
+            # not yet determined. Live probing showed the cmd is either
+            # silently ignored or routed into the wrong subsystem (one
+            # candidate landed inside an EQ band and corrupted it).
+            # Buttons are kept as call-site probes so a future capture
+            # of the official app can be slotted in directly. Hidden
+            # under the diagnostic category so they're tucked out of the
+            # main UI — a user has to actively go look for them.
+            "factory_reset": {
+                "p": "button",
+                "name": "Factory reset (BROKEN — encoding TBD)",
+                "uniq_id": f"dsp408_{self.slug}_factory_reset",
+                "cmd_t": self.t("system/factory_reset/press"),
+                "icon": "mdi:restart-alert",
+                "ent_cat": "diagnostic",
+            },
+            **{
+                f"load_preset_{n}": {
+                    "p": "button",
+                    "name": f"Load factory preset {n} (BROKEN — encoding TBD)",
+                    "uniq_id": f"dsp408_{self.slug}_load_preset_{n}",
+                    "cmd_t": self.t(f"system/load_preset/{n}/press"),
+                    "icon": "mdi:speaker-multiple",
+                    "ent_cat": "diagnostic",
+                }
+                for n in range(1, 7)
+            },
+            # Per-cell routing level (u8 0..255). Lets the user dial in a
+            # non-unity mix or boost (0xFF ≈ +8.1 dB headroom, validated by
+            # tests/loopback/test_routing_percentage.py). The bool switch
+            # above is a thin wrapper: ON = 0x64 (unity), OFF = 0x00.
+            **{
+                f"out{n}_in{m}_level": {
+                    "p": "number",
+                    "name": f"Out {n} ← In {m} level",
+                    "uniq_id": f"dsp408_{self.slug}_out{n}_in{m}_level",
+                    "stat_t": self.t(f"route/out{n}_in{m}/level/state"),
+                    "cmd_t": self.t(f"route/out{n}_in{m}/level/set"),
+                    "min": 0,
+                    "max": 255,
+                    "step": 1,
+                    "icon": "mdi:tune-variant",
+                    "mode": "box",
                     "ent_cat": "config",
                 }
                 for n in range(1, 9)
@@ -412,19 +496,27 @@ class DeviceWorker:
         for n in range(1, 9):
             topics.append(self.t(f"ch{n}_volume/set"))
             topics.append(self.t(f"ch{n}_mute/set"))
+            topics.append(self.t(f"ch{n}_polar/set"))
+            topics.append(self.t(f"ch{n}_delay/set"))
         for n in range(1, 9):
             for m in range(1, 5):
                 topics.append(self.t(f"route/out{n}_in{m}/set"))
+                topics.append(self.t(f"route/out{n}_in{m}/level/set"))
+        # EXPERIMENTAL system-register buttons
+        topics.append(self.t("system/factory_reset/press"))
+        for n in range(1, 7):
+            topics.append(self.t(f"system/load_preset/{n}/press"))
         return topics
 
-    # In-memory routing matrix mirror (since no working device readback).
-    # Initialised from defaults; updated whenever we publish-write a route.
+    # In-memory routing matrix mirror (no working device readback for empty
+    # rows). Stored as u8 levels (0..255); 0 = OFF, anything else = ON.
+    # Initialised from defaults; updated by every publish-write of a route.
     def _routing_state_init(self) -> None:
         if not hasattr(self, "_routing_mirror"):
-            # 8 outputs × 4 inputs of bool. We don't know the device's
-            # actual boot state, so default everything OFF; the user (or
-            # a previous retained MQTT state) will populate.
-            self._routing_mirror = [[False] * 4 for _ in range(8)]
+            # 8 outputs × 4 inputs. Default OFF (level 0). Toggling a switch
+            # ON writes 0x64 (unity) by convention; explicit level writes
+            # bypass that and store the user-chosen value.
+            self._routing_mirror = [[0] * 4 for _ in range(8)]
 
     def handle_command(self, topic: str, payload_bytes: bytes) -> None:
         """Dispatch an inbound MQTT command to the Device."""
@@ -452,8 +544,23 @@ class DeviceWorker:
                 self._handle_ch_volume(topic, text)
             elif topic.startswith(self.t("ch")) and topic.endswith("_mute/set"):
                 self._handle_ch_mute(topic, text)
+            elif topic.startswith(self.t("ch")) and topic.endswith("_polar/set"):
+                self._handle_ch_polar(topic, text)
+            elif topic.startswith(self.t("ch")) and topic.endswith("_delay/set"):
+                self._handle_ch_delay(topic, text)
+            # NOTE: order matters — check the longer "/level/set" suffix
+            # *before* the catch-all bool route handler, otherwise a level
+            # write would be parsed as a bool toggle.
+            elif (topic.startswith(self.t("route/"))
+                  and topic.endswith("/level/set")):
+                self._handle_route_level(topic, text)
             elif topic.startswith(self.t("route/")) and topic.endswith("/set"):
                 self._handle_route(topic, text)
+            elif topic == self.t("system/factory_reset/press"):
+                self._handle_factory_reset()
+            elif (topic.startswith(self.t("system/load_preset/"))
+                  and topic.endswith("/press")):
+                self._handle_load_preset(topic)
             else:
                 log.warning("unhandled topic %s", topic)
         except (DeviceNotFound, ProtocolError, OSError, ValueError) as e:
@@ -495,21 +602,117 @@ class DeviceWorker:
         self.publish(f"ch{n}_mute/state", "ON" if muted else "OFF",
                      retain=True, qos=1)
 
+    # Default level written when a routing-bool switch is toggled ON.
+    # 0x64 = decimal 100 = unity gain (matches what the legacy bool API
+    # has always written). User-chosen levels (via the level slider) are
+    # preserved across bool toggles unless the user toggles OFF first.
+    _ROUTING_DEFAULT_ON_LEVEL = 0x64
+
+    def _parse_route_topic(self, topic: str) -> tuple[int, int]:
+        """Extract (out_n, in_m) — both 1-based — from a routing topic."""
+        tail = topic.split("/route/", 1)[1]
+        cell = tail.split("/", 1)[0]            # "out3_in2"
+        out_n = int(cell.split("_")[0][3:])     # "out3" → 3
+        in_m = int(cell.split("_")[1][2:])      # "in2"  → 2
+        return out_n, in_m
+
+    def _publish_routing_cell(self, out_n: int, in_m: int, level: int) -> None:
+        """Publish both the bool and level state topics for one cell."""
+        self.publish(f"route/out{out_n}_in{in_m}/state",
+                     "ON" if level > 0 else "OFF", retain=True, qos=1)
+        self.publish(f"route/out{out_n}_in{in_m}/level/state",
+                     str(level), retain=True, qos=1)
+
+    def _write_routing_row(self, out_idx: int) -> None:
+        """Push the current mirror row to the device via set_routing_levels."""
+        row = self._routing_mirror[out_idx]
+        self._ensure_device().set_routing_levels(out_idx, row)
+
     def _handle_route(self, topic: str, text: str) -> None:
-        # topic = "<base>/route/out<N>_in<M>/set"
-        tail = topic.split("/route/", 1)[1]  # e.g. "out3_in2/set"
-        cell = tail.split("/", 1)[0]          # "out3_in2"
-        out_n = int(cell.split("_")[0][3:])   # "out3" → 3
-        in_m = int(cell.split("_")[1][2:])    # "in2"  → 2
+        out_n, in_m = self._parse_route_topic(topic)
         on = text.strip().upper() in ("ON", "TRUE", "1", "YES")
         self._routing_state_init()
-        self._routing_mirror[out_n - 1][in_m - 1] = on
-        row = self._routing_mirror[out_n - 1]
+        prev = self._routing_mirror[out_n - 1][in_m - 1]
+        if on:
+            # Preserve any user-chosen non-zero level; only seed unity if
+            # the cell was previously OFF.
+            level = prev if prev > 0 else self._ROUTING_DEFAULT_ON_LEVEL
+        else:
+            level = 0
+        self._routing_mirror[out_n - 1][in_m - 1] = level
+        self._write_routing_row(out_n - 1)
+        self._publish_routing_cell(out_n, in_m, level)
+
+    def _handle_route_level(self, topic: str, text: str) -> None:
+        # topic = "<base>/route/out<N>_in<M>/level/set"
+        out_n, in_m = self._parse_route_topic(topic)
+        try:
+            level = int(float(text.strip()))
+        except ValueError as e:
+            raise ValueError(f"route level must be 0..255, got {text!r}") from e
+        if not 0 <= level <= 255:
+            raise ValueError(f"route level out of range: {level}")
+        self._routing_state_init()
+        self._routing_mirror[out_n - 1][in_m - 1] = level
+        self._write_routing_row(out_n - 1)
+        self._publish_routing_cell(out_n, in_m, level)
+
+    def _handle_ch_polar(self, topic: str, text: str) -> None:
+        n = int(topic.rsplit("/ch", 1)[1].split("_")[0])
+        if not 1 <= n <= 8:
+            raise ValueError(f"channel {n} out of range")
+        polar = text.strip().upper() in ("ON", "TRUE", "1", "YES")
+        self._ensure_device().set_channel_polar(n - 1, polar)
+        self.publish(f"ch{n}_polar/state",
+                     "ON" if polar else "OFF", retain=True, qos=1)
+
+    def _handle_ch_delay(self, topic: str, text: str) -> None:
+        n = int(topic.rsplit("/ch", 1)[1].split("_")[0])
+        if not 1 <= n <= 8:
+            raise ValueError(f"channel {n} out of range")
+        try:
+            samples = int(float(text.strip()))
+        except ValueError as e:
+            raise ValueError(f"delay must be an integer, got {text!r}") from e
+        if not 0 <= samples <= 0xFFFF:
+            raise ValueError(f"delay out of u16 range: {samples}")
+        # Preserve volume + mute from the last cached set; the firmware
+        # silently caps anything above 359 taps.
         dev = self._ensure_device()
-        dev.set_routing(out_n - 1,
-                        in1=row[0], in2=row[1], in3=row[2], in4=row[3])
-        self.publish(f"route/out{out_n}_in{in_m}/state",
-                     "ON" if on else "OFF", retain=True, qos=1)
+        cached = dev.get_channel_cached(n - 1)
+        dev.set_channel(n - 1, db=cached["db"], muted=cached["muted"],
+                        delay_samples=samples)
+        self.publish(f"ch{n}_delay/state", str(samples), retain=True, qos=1)
+
+    def _handle_factory_reset(self) -> None:
+        """EXPERIMENTAL: trigger the magic-word factory-reset register write.
+
+        Logged loudly because it's destructive — wipes any stored config.
+        Wire encoding has not been live-validated, so this might silently
+        no-op on a real device. See dsp408.Device.factory_reset() docstring.
+        """
+        log.warning("%s: factory_reset button pressed — issuing magic 0xA5A6 "
+                    "to register 0x061F", self.slug)
+        self._ensure_device().factory_reset()
+        self.publish("system/factory_reset/last",
+                     "issued", retain=False)
+
+    def _handle_load_preset(self, topic: str) -> None:
+        """EXPERIMENTAL: load one of the 6 built-in factory presets.
+
+        topic = "<base>/system/load_preset/<N>/press"
+        """
+        # extract N from ".../load_preset/<N>/press"
+        try:
+            n_str = topic.split("/load_preset/", 1)[1].split("/", 1)[0]
+            n = int(n_str)
+        except (IndexError, ValueError) as e:
+            raise ValueError(f"can't parse preset id from {topic!r}") from e
+        log.warning("%s: load_factory_preset(%d) — issuing magic 0x%04x",
+                    self.slug, n, 0xB500 | n)
+        self._ensure_device().load_factory_preset(n)
+        self.publish(f"system/load_preset/{n}/last",
+                     "issued", retain=False)
 
     def _handle_raw(self, text: str, reply_suffix: str, is_write: bool) -> None:
         try:
@@ -608,6 +811,7 @@ class DeviceWorker:
         hpf = state.get("hpf") or {}
         lpf = state.get("lpf") or {}
         comp = state.get("compressor") or {}
+        delay_samples = int(state.get("delay", 0))
         doc = {
             "polar": bool(state.get("polar", False)),
             "eq_mode": int(state.get("eq_mode", 0)),
@@ -615,6 +819,10 @@ class DeviceWorker:
             "spk_type_raw": int(state.get("spk_type", 0)),
             "name": state.get("name", ""),
             "linkgroup": int(state.get("linkgroup", 0)),
+            # delay in both raw samples and milliseconds @ 48 kHz (the
+            # firmware encoding is taps; ms is provided for human convenience)
+            "delay_samples": delay_samples,
+            "delay_ms": round(delay_samples * 1000.0 / 48000, 4),
             "hpf": {
                 "freq_hz": int(hpf.get("freq", 0)),
                 "filter": _filter_name(int(hpf.get("filter", 0))),
@@ -678,6 +886,12 @@ class DeviceWorker:
                 self.publish(f"ch{n}_mute/state",
                              "ON" if cached["muted"] else "OFF",
                              retain=True, qos=1)
+                self.publish(f"ch{n}_polar/state",
+                             "ON" if cached.get("polar") else "OFF",
+                             retain=True, qos=1)
+                self.publish(f"ch{n}_delay/state",
+                             str(int(cached.get("delay", 0))),
+                             retain=True, qos=1)
                 continue
 
             # Successfully read from device — publish actual state.
@@ -686,6 +900,12 @@ class DeviceWorker:
             self.publish(f"ch{n}_mute/state",
                          "ON" if state["muted"] else "OFF",
                          retain=True, qos=1)
+            self.publish(f"ch{n}_polar/state",
+                         "ON" if state.get("polar") else "OFF",
+                         retain=True, qos=1)
+            self.publish(f"ch{n}_delay/state",
+                         str(int(state.get("delay", 0))),
+                         retain=True, qos=1)
 
             # Publish full per-channel state as a single JSON sensor — exposes
             # phase, crossover, mixer, compressor, link group, and channel name
@@ -693,24 +913,25 @@ class DeviceWorker:
             # extract specific fields via HA template sensors as needed.
             self._publish_channel_state(n, state)
 
-            # Merge routing row into the in-memory mirror so that
-            # subsequent toggle commands build on the correct baseline.
-            # Only update cells where the blob returned a non-ambiguous
-            # (i.e. at least one ON) result; otherwise keep the mirror.
-            routing_row = state.get("routing")
-            if routing_row and any(routing_row):
-                self._routing_mirror[channel] = list(routing_row)
-                log.debug("%s: ch%d routing from device: %s",
-                          self.slug, n, routing_row)
+            # The blob's mixer field IS the routing row for this output
+            # (cells [0..3] = IN1..IN4 levels). Read it and seed the
+            # mirror so subsequent toggles build on the device's actual
+            # baseline. We accept all-zero rows too — a fully-OFF row is
+            # legitimate state, not "missing data".
+            mixer = state.get("mixer") or []
+            if len(mixer) >= 4:
+                row = [int(mixer[i]) & 0xFF for i in range(4)]
+                self._routing_mirror[channel] = row
+                log.debug("%s: ch%d routing levels from device: %s",
+                          self.slug, n, row)
 
-        # Publish the routing matrix state (from mirror, possibly updated
-        # above for channels with at least one ON input).
+        # Publish the routing matrix state (from mirror, just refreshed
+        # above from the device blob). Each cell publishes BOTH the bool
+        # state (ON/OFF) and the numeric level (0..255).
         for n in range(1, 9):
             for m in range(1, 5):
-                on = self._routing_mirror[n - 1][m - 1]
-                self.publish(f"route/out{n}_in{m}/state",
-                             "ON" if on else "OFF",
-                             retain=True, qos=1)
+                level = self._routing_mirror[n - 1][m - 1]
+                self._publish_routing_cell(n, m, level)
 
     def run(self) -> None:
         """Thread entry point. Polls the device until stopped.

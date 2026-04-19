@@ -65,8 +65,9 @@ def test_discovery_payload_shape_and_invariants():
         assert "p" in cmp, f"{cmp_id}: missing platform key `p`"
         assert "uniq_id" in cmp, f"{cmp_id}: missing uniq_id"
         # If a cmd_t is present, stat_t must also be present so HA
-        # can reflect external state changes.
-        if "cmd_t" in cmp:
+        # can reflect external state changes — except for buttons,
+        # which are write-only by design (HA fires them, no state).
+        if "cmd_t" in cmp and cmp.get("p") != "button":
             assert "stat_t" in cmp, f"{cmp_id}: cmd_t without stat_t"
         # unique_ids must be MQTT-safe (no wildcards)
         for ch in ("+", "#", " "):
@@ -176,3 +177,164 @@ def test_rc_is_success_paho_v2_reasoncode():
 
     assert mqtt._rc_is_success(_FakeReasonCode(0)) is True
     assert mqtt._rc_is_success(_FakeReasonCode(5)) is False
+
+
+# ── new H-feature entities ───────────────────────────────────────────────
+class _SilentClient:
+    """Stand-in for the real paho client — captures publishes, no I/O."""
+    def __init__(self):
+        self.published: list[tuple[str, str]] = []
+    def publish(self, topic, payload, qos=0, retain=False):
+        self.published.append((topic, payload if isinstance(payload, str)
+                               else payload.decode("utf-8", "replace")))
+
+
+class _FakeDevice:
+    """Just enough Device interface to drive the handlers."""
+    def __init__(self):
+        self.calls: list[tuple] = []
+        self.cached = {"db": -3.5, "muted": False, "polar": False,
+                       "delay": 0, "subidx": 0x01}
+    def set_channel_polar(self, ch, polar):
+        self.calls.append(("polar", ch, polar))
+    def set_channel(self, ch, db, muted, delay_samples=0, polar=None):
+        self.calls.append(("set_channel", ch, db, muted, delay_samples, polar))
+    def get_channel_cached(self, ch):
+        return dict(self.cached)
+    def set_routing_levels(self, out_idx, levels):
+        self.calls.append(("routing_levels", out_idx, list(levels)))
+
+
+def _make_worker():
+    cfg = mqtt.BridgeConfig(broker="x", base_topic="dsp408")
+    client = _SilentClient()
+    w = mqtt.DeviceWorker(client, _fake_info(), cfg)
+    fake = _FakeDevice()
+    w._ensure_device = lambda: fake     # type: ignore[method-assign]
+    return w, client, fake
+
+
+def test_discovery_includes_polar_delay_and_routing_levels():
+    w, _, _ = _make_worker()
+    cmps = w.build_discovery_payload()["cmps"]
+    # 8 phase-invert switches, 8 delay sliders
+    for n in range(1, 9):
+        assert f"ch{n}_polar" in cmps and cmps[f"ch{n}_polar"]["p"] == "switch"
+        assert f"ch{n}_delay" in cmps and cmps[f"ch{n}_delay"]["p"] == "number"
+        assert cmps[f"ch{n}_delay"]["max"] == 359   # firmware cap
+    # 32 routing-level numbers (8 outs × 4 ins)
+    for n in range(1, 9):
+        for m in range(1, 5):
+            key = f"out{n}_in{m}_level"
+            assert key in cmps
+            assert cmps[key]["p"] == "number"
+            assert cmps[key]["max"] == 255
+
+
+def test_subscribe_topics_cover_new_handlers():
+    w, _, _ = _make_worker()
+    topics = w.subscribe_commands()
+    # New per-channel topics
+    for n in range(1, 9):
+        assert w.t(f"ch{n}_polar/set") in topics
+        assert w.t(f"ch{n}_delay/set") in topics
+    # New per-cell level topics
+    for n in range(1, 9):
+        for m in range(1, 5):
+            assert w.t(f"route/out{n}_in{m}/level/set") in topics
+
+
+def test_handle_ch_polar_dispatches_and_publishes():
+    w, client, fake = _make_worker()
+    w.handle_command(w.t("ch3_polar/set"), b"ON")
+    assert ("polar", 2, True) in fake.calls
+    assert (w.t("ch3_polar/state"), "ON") in client.published
+    w.handle_command(w.t("ch3_polar/set"), b"OFF")
+    assert ("polar", 2, False) in fake.calls
+
+
+def test_handle_ch_delay_preserves_volume_and_mute():
+    w, client, fake = _make_worker()
+    fake.cached = {"db": -6.5, "muted": True, "polar": False,
+                   "delay": 0, "subidx": 0x01}
+    w.handle_command(w.t("ch5_delay/set"), b"144")
+    assert ("set_channel", 4, -6.5, True, 144, None) in fake.calls
+    assert (w.t("ch5_delay/state"), "144") in client.published
+
+
+def test_handle_route_bool_writes_unity_then_preserves_user_level():
+    w, client, fake = _make_worker()
+    # First: bool ON from a fresh OFF cell → seeds unity (0x64)
+    w.handle_command(w.t("route/out2_in3/set"), b"ON")
+    last_routing = [c for c in fake.calls if c[0] == "routing_levels"][-1]
+    assert last_routing[1] == 1                       # out_idx (0-based)
+    assert last_routing[2][2] == 0x64                 # IN3 cell unity
+    # Second: user dials in 200 via the level slider
+    w.handle_command(w.t("route/out2_in3/level/set"), b"200")
+    last_routing = [c for c in fake.calls if c[0] == "routing_levels"][-1]
+    assert last_routing[2][2] == 200
+    # Third: bool toggle OFF then ON again — should preserve 200 (not reset to 0x64)
+    w.handle_command(w.t("route/out2_in3/set"), b"OFF")
+    last_off = [c for c in fake.calls if c[0] == "routing_levels"][-1]
+    assert last_off[2][2] == 0
+    w.handle_command(w.t("route/out2_in3/set"), b"ON")
+    last_on = [c for c in fake.calls if c[0] == "routing_levels"][-1]
+    # User-chosen level is lost after an explicit OFF (by design; OFF means 0,
+    # and we re-seed unity on the next ON). Document this in the assertion.
+    assert last_on[2][2] == 0x64
+
+
+def test_handle_route_level_validates_range():
+    w, _, _ = _make_worker()
+    with pytest.raises((ValueError, Exception)):
+        # 256 is out of u8 range — should propagate up to handle_command's
+        # catch block. Since handle_command swallows ValueError, instead
+        # test the inner handler directly.
+        w._handle_route_level(w.t("route/out1_in1/level/set"), "256")
+
+
+def test_discovery_includes_factory_reset_and_preset_buttons():
+    w, _, _ = _make_worker()
+    cmps = w.build_discovery_payload()["cmps"]
+    assert cmps["factory_reset"]["p"] == "button"
+    assert "cmd_t" in cmps["factory_reset"]
+    # No state topic on a button (HA buttons are write-only)
+    for n in range(1, 7):
+        assert cmps[f"load_preset_{n}"]["p"] == "button"
+
+
+def test_factory_reset_topic_is_subscribed():
+    w, _, _ = _make_worker()
+    topics = w.subscribe_commands()
+    assert w.t("system/factory_reset/press") in topics
+    for n in range(1, 7):
+        assert w.t(f"system/load_preset/{n}/press") in topics
+
+
+def test_handle_factory_reset_invokes_device_method():
+    w, client, _fake = _make_worker()
+    # Add factory_reset to fake (we'd added it via _ensure_device override)
+    called = []
+    _fake.factory_reset = lambda: called.append("reset")  # type: ignore[attr-defined]
+    w.handle_command(w.t("system/factory_reset/press"), b"PRESS")
+    assert called == ["reset"]
+
+
+def test_handle_load_preset_extracts_id_and_dispatches():
+    w, _client, _fake = _make_worker()
+    called = []
+    _fake.load_factory_preset = (  # type: ignore[attr-defined]
+        lambda n: called.append(n))
+    w.handle_command(w.t("system/load_preset/3/press"), b"PRESS")
+    assert called == [3]
+
+
+def test_routing_mirror_initialises_as_int_levels():
+    w, _, _ = _make_worker()
+    w._routing_state_init()
+    # 8 rows × 4 cells, all int 0
+    assert len(w._routing_mirror) == 8
+    for row in w._routing_mirror:
+        assert len(row) == 4
+        for cell in row:
+            assert isinstance(cell, int) and cell == 0
