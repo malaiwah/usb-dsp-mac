@@ -357,8 +357,8 @@ def test_parse_channel_blob_returns_none_for_out_of_range_vol() -> None:
 
 
 def test_parse_channel_blob_returns_none_when_too_short() -> None:
-    """A blob shorter than 254 bytes returns None (can't reach offset 253)."""
-    blob = bytes(253)  # one byte short of having a valid subidx field
+    """A blob shorter than 286 bytes returns None (can't reach end of name field)."""
+    blob = bytes(285)  # one byte short of having a complete name field
     result = Device.parse_channel_state_blob(blob, 0)
     assert result is None
 
@@ -419,6 +419,85 @@ def test_parse_channel_blob_all_zeros_parses_as_muted_silent() -> None:
     assert result["muted"] is True   # en_bit=0 → muted
     assert result["db"] == -60.0     # raw_vol=0 → -60 dB
     assert result["subidx"] == 0x00  # returns whatever is at blob[253]
+
+
+def test_parse_channel_blob_decodes_extended_fields() -> None:
+    """Verify the full 296-byte blob layout: phase, crossover, mixer,
+    compressor, link group, name — fields newly decoded from the leon
+    v1.23 Android app + verified live on Pi hardware.
+    """
+    from dsp408.protocol import (
+        CHANNEL_SUBIDX,
+        FILTER_TYPE_BESSEL,
+        FILTER_TYPE_LR,
+        OFF_ALL_PASS_Q,
+        OFF_ATTACK_MS,
+        OFF_DELAY,
+        OFF_EQ_MODE,
+        OFF_GAIN,
+        OFF_HPF_FILTER,
+        OFF_HPF_FREQ,
+        OFF_HPF_SLOPE,
+        OFF_LINKGROUP,
+        OFF_LPF_FILTER,
+        OFF_LPF_FREQ,
+        OFF_LPF_SLOPE,
+        OFF_MIXER,
+        OFF_MUTE,
+        OFF_NAME,
+        OFF_POLAR,
+        OFF_RELEASE_MS,
+        OFF_SPK_TYPE,
+        OFF_THRESHOLD,
+    )
+    blob = bytearray(296)
+    blob[OFF_MUTE] = 1                        # audible
+    blob[OFF_POLAR] = 1                       # phase inverted
+    blob[OFF_GAIN:OFF_GAIN + 2] = (480).to_bytes(2, "little")    # -12 dB
+    blob[OFF_DELAY:OFF_DELAY + 2] = (52).to_bytes(2, "little")   # 52 samples
+    blob[OFF_EQ_MODE] = 1                     # EQ on
+    blob[OFF_SPK_TYPE] = CHANNEL_SUBIDX[3]    # 0x07 = fr_low
+    blob[OFF_HPF_FREQ:OFF_HPF_FREQ + 2] = (80).to_bytes(2, "little")
+    blob[OFF_HPF_FILTER] = FILTER_TYPE_LR     # Linkwitz-Riley
+    blob[OFF_HPF_SLOPE] = 3                   # 24 dB/oct
+    blob[OFF_LPF_FREQ:OFF_LPF_FREQ + 2] = (5000).to_bytes(2, "little")
+    blob[OFF_LPF_FILTER] = FILTER_TYPE_BESSEL
+    blob[OFF_LPF_SLOPE] = 1                   # 12 dB/oct
+    blob[OFF_MIXER:OFF_MIXER + 8] = bytes([100, 50, 0, 0, 0, 0, 0, 0])
+    blob[OFF_ALL_PASS_Q:OFF_ALL_PASS_Q + 2] = (420).to_bytes(2, "little")
+    blob[OFF_ATTACK_MS:OFF_ATTACK_MS + 2] = (10).to_bytes(2, "little")
+    blob[OFF_RELEASE_MS:OFF_RELEASE_MS + 2] = (250).to_bytes(2, "little")
+    blob[OFF_THRESHOLD] = 12                  # threshold raw
+    blob[OFF_LINKGROUP] = 2                   # group 2
+    blob[OFF_NAME:OFF_NAME + 8] = b"TWEETER\x00"
+
+    result = Device.parse_channel_state_blob(bytes(blob), 3)
+    assert result is not None
+    # legacy fields still present
+    assert result["db"] == -12.0
+    assert result["muted"] is False
+    assert result["delay"] == 52
+    assert result["subidx"] == 0x07
+    # new fields
+    assert result["polar"] is True
+    assert result["eq_mode"] == 1
+    assert result["spk_type"] == 0x07
+    assert result["hpf"] == {"freq": 80, "filter": FILTER_TYPE_LR, "slope": 3}
+    assert result["lpf"] == {
+        "freq": 5000, "filter": FILTER_TYPE_BESSEL, "slope": 1,
+    }
+    assert result["mixer"] == [100, 50, 0, 0, 0, 0, 0, 0]
+    assert result["compressor"] == {
+        "all_pass_q": 420,
+        "attack_ms": 10,
+        "release_ms": 250,
+        "threshold": 12,
+    }
+    assert result["linkgroup"] == 2
+    assert result["name"] == "TWEETER"
+    # raw blob preserved
+    assert isinstance(result["raw"], bytes)
+    assert len(result["raw"]) == 296
 
 
 def test_get_channel_updates_cache_with_discovered_subidx() -> None:

@@ -265,11 +265,111 @@ CHANNEL_VOL_MAX = 600    # raw = 0 dB (unity)
 CHANNEL_VOL_OFFSET = 600  # raw = (dB * 10) + 600
 
 # Subidx for each of the 8 channel write cmds. Order matches cmd index 0..7.
+# These are also the *spk_type* (speaker-role) values stored at blob[253] of
+# the per-channel state — confirmed by cross-reference with the official
+# Android app's leon.android.chs_ydw_dcs480_dsp_408 v1.23 (DataStruct_Output
+# field naming + the 25-entry speaker-role table).
 CHANNEL_SUBIDX = (0x01, 0x02, 0x03, 0x07, 0x08, 0x09, 0x0F, 0x12)
 
 # Routing input-on / off levels
 ROUTING_ON = 0x64
 ROUTING_OFF = 0x00
+
+# ── Per-channel state blob (cmd=0x77NN response) field offsets ─────────────
+# Decoded from Android leon v1.23 DataOptUtil.java:1351–1465, then verified
+# live on real DSP-408 hardware (see notes/blob-layout-verification.md on
+# the reverse-engineering branch). The full blob is 296 bytes; offsets 0..245
+# carry the parametric-EQ region (see below).
+#
+# IMPORTANT: leon's app expects 31 EQ bands (248 bytes). Our firmware variant
+# has the basic record at offset 246 instead of 248 — a 2-byte shift implying
+# 30 EQ bands (240 bytes) plus 6 bytes of header/padding before the basic
+# record. EQ count + stride still need confirmation via a Windows-USB
+# capture of single-band tweaks.
+BLOB_SIZE = 296
+
+# Basic per-channel record (8 bytes at 246..253) — also the write payload format
+# accepted by cmd=0x1FNN.
+OFF_MUTE        = 246  # 1=audible, 0=muted (INVERTED from leon's polarity)
+OFF_POLAR       = 247  # phase invert: 0=normal, 1=inverted (180°)
+OFF_GAIN        = 248  # u16 LE; raw = (dB * 10) + 600; range 0..600 = -60..0 dB
+OFF_DELAY       = 250  # u16 LE; samples (or cm-step index)
+OFF_EQ_MODE     = 252  # EQ enable/bypass flag
+OFF_SPK_TYPE    = 253  # speaker-role index; one of CHANNEL_SUBIDX by default
+
+# Crossover (HPF + LPF) — 8 bytes at 254..261
+OFF_HPF_FREQ    = 254  # u16 LE Hz (or table index)
+OFF_HPF_FILTER  = 256  # 0=Butterworth, 1=Bessel, 2=Linkwitz-Riley
+OFF_HPF_SLOPE   = 257  # 0..7 = 6/12/18/24/30/36/42/48 dB/oct, 8=Off
+OFF_LPF_FREQ    = 258
+OFF_LPF_FILTER  = 260
+OFF_LPF_SLOPE   = 261
+
+# Mixer — 8 bytes at 262..269 (one u8 percentage per input source IN1..IN8).
+# leon's data model has 16 cells per output but our firmware exposes 8.
+OFF_MIXER       = 262
+MIXER_CELLS     = 8
+
+# Compressor / dynamics + link group — 8 bytes at 270..277
+OFF_ALL_PASS_Q  = 270  # u16 LE
+OFF_ATTACK_MS   = 272  # u16 LE
+OFF_RELEASE_MS  = 274  # u16 LE
+OFF_THRESHOLD   = 276  # u8 (encoding TBD; likely dB-scaled)
+OFF_LINKGROUP   = 277  # u8 channel link/group index (0 = no link)
+
+# Per-channel name — 8 bytes ASCII at 278..285
+OFF_NAME        = 278
+NAME_LEN        = 8
+
+# Filter type / slope enums (for select-style controls in MQTT discovery).
+FILTER_TYPE_BW = 0
+FILTER_TYPE_BESSEL = 1
+FILTER_TYPE_LR = 2
+FILTER_TYPE_NAMES = ("Butterworth", "Bessel", "Linkwitz-Riley")
+
+# Slope enum: index → "6 dB/oct" / "12 dB/oct" / ... / "Off"
+SLOPE_NAMES = (
+    "6 dB/oct",   # 0
+    "12 dB/oct",  # 1
+    "18 dB/oct",  # 2
+    "24 dB/oct",  # 3 — manual stops here, but firmware accepts more
+    "30 dB/oct",  # 4
+    "36 dB/oct",  # 5
+    "42 dB/oct",  # 6
+    "48 dB/oct",  # 7
+    "Off",        # 8
+)
+
+# Speaker-role names (25-entry table from the leon app's arrays.xml).
+# Index = blob[OFF_SPK_TYPE] value. The factory CHANNEL_SUBIDX assignments
+# pick a sparse subset of these.
+SPK_TYPE_NAMES = (
+    "none",       # 0
+    "fl_high",    # 1   = CHANNEL_SUBIDX[0]
+    "fl_mid",     # 2   = CHANNEL_SUBIDX[1]
+    "fl_low",     # 3   = CHANNEL_SUBIDX[2]
+    "fl",         # 4
+    "fr_high",    # 5
+    "fr_mid",     # 6
+    "fr_low",     # 7   = CHANNEL_SUBIDX[3]
+    "fr",         # 8   = CHANNEL_SUBIDX[4]
+    "rl_high",    # 9   = CHANNEL_SUBIDX[5] (best guess from pattern)
+    "rl_mid",     # 10
+    "rl_low",     # 11
+    "rl",         # 12
+    "rr_high",    # 13
+    "rr_mid",     # 14
+    "rr_low",     # 15  = CHANNEL_SUBIDX[6]
+    "rr",         # 16
+    "center",     # 17
+    "sub",        # 18  = CHANNEL_SUBIDX[7]
+    "sub_l",      # 19
+    "sub_r",      # 20
+    "aux1",       # 21
+    "aux2",       # 22
+    "aux3",       # 23
+    "aux4",       # 24
+)
 
 
 __all__ = [
@@ -319,4 +419,17 @@ __all__ = [
     "CHANNEL_SUBIDX",
     "ROUTING_ON",
     "ROUTING_OFF",
+    # blob layout
+    "BLOB_SIZE",
+    "OFF_MUTE", "OFF_POLAR", "OFF_GAIN", "OFF_DELAY",
+    "OFF_EQ_MODE", "OFF_SPK_TYPE",
+    "OFF_HPF_FREQ", "OFF_HPF_FILTER", "OFF_HPF_SLOPE",
+    "OFF_LPF_FREQ", "OFF_LPF_FILTER", "OFF_LPF_SLOPE",
+    "OFF_MIXER", "MIXER_CELLS",
+    "OFF_ALL_PASS_Q", "OFF_ATTACK_MS", "OFF_RELEASE_MS",
+    "OFF_THRESHOLD", "OFF_LINKGROUP",
+    "OFF_NAME", "NAME_LEN",
+    # enums
+    "FILTER_TYPE_BW", "FILTER_TYPE_BESSEL", "FILTER_TYPE_LR",
+    "FILTER_TYPE_NAMES", "SLOPE_NAMES", "SPK_TYPE_NAMES",
 ]

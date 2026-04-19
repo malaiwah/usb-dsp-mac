@@ -67,6 +67,27 @@ from .protocol import (
     MASTER_LEVEL_MAX,
     MASTER_LEVEL_MIN,
     MASTER_LEVEL_OFFSET,
+    MIXER_CELLS,
+    NAME_LEN,
+    OFF_ALL_PASS_Q,
+    OFF_ATTACK_MS,
+    OFF_DELAY,
+    OFF_EQ_MODE,
+    OFF_GAIN,
+    OFF_HPF_FILTER,
+    OFF_HPF_FREQ,
+    OFF_HPF_SLOPE,
+    OFF_LINKGROUP,
+    OFF_LPF_FILTER,
+    OFF_LPF_FREQ,
+    OFF_LPF_SLOPE,
+    OFF_MIXER,
+    OFF_MUTE,
+    OFF_NAME,
+    OFF_POLAR,
+    OFF_RELEASE_MS,
+    OFF_SPK_TYPE,
+    OFF_THRESHOLD,
     PID,
     ROUTING_OFF,
     ROUTING_ON,
@@ -527,72 +548,122 @@ class Device:
 
     @staticmethod
     def parse_channel_state_blob(blob: bytes, channel: int) -> dict | None:
-        """Extract volume, mute, delay, and subidx from a 296-byte channel blob.
+        """Decode the full 296-byte per-channel state blob into a flat dict.
 
-        The blob returned by cmd=0x77NN (read_channel_state) is the 296-byte
-        channel state struct that the firmware keeps in RAM.  The last 8
-        bytes of the first 254 bytes hold the write-format channel record:
+        The blob returned by ``cmd=0x77NN`` (read_channel_state) is the
+        firmware's per-channel struct in RAM.  Field offsets in the second
+        half (246..285) were confirmed live on real DSP-408 hardware and
+        align with the official Android leon v1.23 app's
+        ``DataStruct_Output`` layout shifted by 2 bytes (our firmware variant
+        appears to carry 30 EQ bands, not 31, in the leading region).
+
+        Layout (verified offsets — see protocol.py for symbolic names):
 
         .. code-block:: text
 
-            offset  field
-            246     en_bit      1 = audible, 0 = muted
-            247     reserved    always 0x00
-            248..249 vol_le16   raw = (dB * 10) + 600; range 0..600
-            250..251 delay_le16 delay in samples
-            252     reserved    always 0x00
-            253     subidx      DSP channel-type identifier; stored by the
-                                firmware when set_channel() writes this field.
-                                Default values are listed in CHANNEL_SUBIDX,
-                                but the device can be reconfigured to use any
-                                DSP type, so the actual value may differ.
+            0..245   parametric-EQ region (30 bands × 8 bytes? — TBD)
+            246      mute       1=audible, 0=muted (NOTE: inverted vs leon)
+            247      polar      0=normal, 1=phase-inverted (180°)
+            248-249  gain_le16  raw = (dB×10)+600; range 0..600 = -60..0 dB
+            250-251  delay_le16 samples (or cm-step index)
+            252      eq_mode    EQ enable/bypass byte
+            253      spk_type   speaker-role index; default in CHANNEL_SUBIDX
+            254-255  hpf_freq_le16
+            256      hpf_filter (0=BW, 1=Bessel, 2=LR)
+            257      hpf_slope  (0..7 = 6/12/18/24/30/36/42/48 dB/oct, 8=Off)
+            258-259  lpf_freq_le16
+            260      lpf_filter
+            261      lpf_slope
+            262-269  mixer IN1..IN8 (8 × u8 percentage)
+            270-271  all_pass_q_le16
+            272-273  attack_ms_le16   (compressor attack)
+            274-275  release_ms_le16  (compressor release)
+            276      threshold        (compressor)
+            277      linkgroup        (channel link/group index, 0=none)
+            278-285  name (8-byte ASCII channel label)
 
-        These offsets were confirmed from:
-          1. Live device dumps of all 8 channels (every channel has the
-             same blob[0..247], then blob[248..253] with channel-specific
-             state).
-          2. Firmware disassembly: the second ``CMP r3, #0x77`` handler
-             (file offset 0x54b8) shows ``MOV.W sl, #0x128 = 296`` as the
-             exact blob size, and the per-channel struct stride of 296 bytes.
+        Returns the legacy keys (``db``, ``muted``, ``delay``, ``subidx``)
+        plus the new keys (``polar``, ``eq_mode``, ``hpf``, ``lpf``,
+        ``mixer``, ``compressor``, ``linkgroup``, ``name``, ``raw``).
 
-        Note on blob[253]: this is the DSP channel-type stored in RAM —
-        NOT a reliable channel-number validator.  Some devices are configured
-        with non-default types (e.g. ch1 with subidx=0x12).  The value
-        returned here should be **preserved** when writing back to the device
-        so the firmware's DSP type assignment is not accidentally overwritten.
+        ``hpf``/``lpf`` are sub-dicts ``{"freq", "filter", "slope"}``.
+        ``compressor`` is ``{"attack_ms", "release_ms", "threshold",
+        "all_pass_q"}``.
 
-        Note on routing: routing state is stored elsewhere in the blob;
-        the exact offset is not yet decoded.  Track routing in-memory via
-        :meth:`set_routing` / ``DeviceWorker._routing_mirror``.
-
-        Returns:
-            dict with keys ``db`` (float), ``muted`` (bool),
-            ``delay`` (int samples), and ``subidx`` (int), or None if the
-            blob is too short or the en_bit/vol fields are out of range.
+        Returns ``None`` if the blob is too short or ``mute``/``gain`` are
+        out of range (corrupt blob).
         """
         if not 0 <= channel <= 7:
             raise ValueError(f"channel must be in 0..7, got {channel}")
-        # Need at least through offset 253 (the subidx byte).
-        if len(blob) < 254:
+        # Need through offset 285 (last byte of name field).
+        if len(blob) < OFF_NAME + NAME_LEN:
             return None
 
-        # Fixed-offset read: the write-format record is always at bytes 246..253.
-        # blob[253] is the DSP channel-type ("subidx") — we do NOT validate it
-        # against CHANNEL_SUBIDX because the device can be configured with any
-        # type and the actual type must be preserved on write-back.
-        en_bit = blob[246]
+        # Sanity-check the basic record fields before trusting anything else.
+        en_bit = blob[OFF_MUTE]
         if en_bit not in (0, 1):
             return None  # corrupt blob
 
-        raw_vol = int.from_bytes(blob[248:250], "little")
+        raw_vol = int.from_bytes(blob[OFF_GAIN:OFF_GAIN + 2], "little")
         if not (0 <= raw_vol <= CHANNEL_VOL_MAX):
             return None  # corrupt blob
 
-        raw_delay = int.from_bytes(blob[250:252], "little")
+        polar = blob[OFF_POLAR]
+        raw_delay = int.from_bytes(blob[OFF_DELAY:OFF_DELAY + 2], "little")
+        eq_mode = blob[OFF_EQ_MODE]
+        spk_type = blob[OFF_SPK_TYPE]
+
+        hpf = {
+            "freq": int.from_bytes(
+                blob[OFF_HPF_FREQ:OFF_HPF_FREQ + 2], "little"),
+            "filter": blob[OFF_HPF_FILTER],
+            "slope": blob[OFF_HPF_SLOPE],
+        }
+        lpf = {
+            "freq": int.from_bytes(
+                blob[OFF_LPF_FREQ:OFF_LPF_FREQ + 2], "little"),
+            "filter": blob[OFF_LPF_FILTER],
+            "slope": blob[OFF_LPF_SLOPE],
+        }
+        mixer = list(blob[OFF_MIXER:OFF_MIXER + MIXER_CELLS])
+        compressor = {
+            "all_pass_q": int.from_bytes(
+                blob[OFF_ALL_PASS_Q:OFF_ALL_PASS_Q + 2], "little"),
+            "attack_ms": int.from_bytes(
+                blob[OFF_ATTACK_MS:OFF_ATTACK_MS + 2], "little"),
+            "release_ms": int.from_bytes(
+                blob[OFF_RELEASE_MS:OFF_RELEASE_MS + 2], "little"),
+            "threshold": blob[OFF_THRESHOLD],
+        }
+        linkgroup = blob[OFF_LINKGROUP]
+        name = (blob[OFF_NAME:OFF_NAME + NAME_LEN]
+                .rstrip(b"\x00 \xff")
+                .decode("ascii", errors="replace"))
+
         db = (raw_vol - CHANNEL_VOL_OFFSET) / 10.0
         muted = (en_bit == 0)
-        subidx = blob[253]
-        return {"db": db, "muted": muted, "delay": raw_delay, "subidx": subidx}
+
+        return {
+            # legacy keys (preserved for backward compat)
+            "db": db,
+            "muted": muted,
+            "delay": raw_delay,
+            "subidx": spk_type,
+            # new keys
+            "polar": bool(polar),
+            "eq_mode": eq_mode,
+            "spk_type": spk_type,
+            "hpf": hpf,
+            "lpf": lpf,
+            "mixer": mixer,
+            "compressor": compressor,
+            "linkgroup": linkgroup,
+            "name": name,
+            # raw blob retained so callers can re-parse fields we haven't
+            # decoded yet (PEQ bands, ChannelLink etc.) without another
+            # round-trip to the device.
+            "raw": bytes(blob),
+        }
 
     def get_channel(self, channel: int) -> dict:
         """Read per-channel state from the device and return it.

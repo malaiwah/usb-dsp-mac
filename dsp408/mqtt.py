@@ -328,6 +328,25 @@ class DeviceWorker:
                 for n in range(1, 9)
                 for m in range(1, 5)
             },
+            # ── Read-only per-channel state from the 296-byte blob ──
+            # One sensor per channel; the JSON state is exposed via
+            # json_attributes_topic so HA users can reference fields like
+            # `state_attr('sensor.dsp408_<id>_ch1_state', 'hpf')` directly.
+            # Main value shown in HA = the speaker-role name (e.g. "fl_high")
+            # so the entity is human-glanceable.
+            **{
+                f"ch{n}_state": {
+                    "p": "sensor",
+                    "name": f"Channel {n} state",
+                    "uniq_id": f"dsp408_{self.slug}_ch{n}_state",
+                    "stat_t": self.t(f"ch{n}_state/state"),
+                    "val_tpl": "{{ value_json.spk_type }}",
+                    "json_attr_t": self.t(f"ch{n}_state/state"),
+                    "ent_cat": "diagnostic",
+                    "icon": "mdi:waveform",
+                }
+                for n in range(1, 9)
+            },
         }
         return {
             "dev": dev,
@@ -556,6 +575,66 @@ class DeviceWorker:
         self.publish("master_mute/state",
                      "ON" if master_muted else "OFF", retain=True)
 
+    def _publish_channel_state(self, n: int, state: dict) -> None:
+        """Publish the per-channel JSON state document.
+
+        Picks the human-friendly subset of get_channel()'s return dict and
+        publishes it as a single retained MQTT message at
+        ``ch{n}_state/state``.  Drops the ``raw`` blob bytes (not useful in
+        HA) and uses the ``protocol`` enum maps to decode filter type +
+        slope into human strings.
+
+        HA sees this as one diagnostic sensor per channel; users can
+        extract specific fields with template sensors / value_template.
+        """
+        from .protocol import (
+            FILTER_TYPE_NAMES,
+            SLOPE_NAMES,
+            SPK_TYPE_NAMES,
+        )
+
+        def _filter_name(idx: int) -> str:
+            return (FILTER_TYPE_NAMES[idx]
+                    if 0 <= idx < len(FILTER_TYPE_NAMES) else f"unknown({idx})")
+
+        def _slope_name(idx: int) -> str:
+            return (SLOPE_NAMES[idx]
+                    if 0 <= idx < len(SLOPE_NAMES) else f"unknown({idx})")
+
+        def _spk_name(idx: int) -> str:
+            return (SPK_TYPE_NAMES[idx]
+                    if 0 <= idx < len(SPK_TYPE_NAMES) else f"custom({idx:#04x})")
+
+        hpf = state.get("hpf") or {}
+        lpf = state.get("lpf") or {}
+        comp = state.get("compressor") or {}
+        doc = {
+            "polar": bool(state.get("polar", False)),
+            "eq_mode": int(state.get("eq_mode", 0)),
+            "spk_type": _spk_name(int(state.get("spk_type", 0))),
+            "spk_type_raw": int(state.get("spk_type", 0)),
+            "name": state.get("name", ""),
+            "linkgroup": int(state.get("linkgroup", 0)),
+            "hpf": {
+                "freq_hz": int(hpf.get("freq", 0)),
+                "filter": _filter_name(int(hpf.get("filter", 0))),
+                "slope": _slope_name(int(hpf.get("slope", 0))),
+            },
+            "lpf": {
+                "freq_hz": int(lpf.get("freq", 0)),
+                "filter": _filter_name(int(lpf.get("filter", 0))),
+                "slope": _slope_name(int(lpf.get("slope", 0))),
+            },
+            "mixer": list(state.get("mixer", [])),
+            "compressor": {
+                "attack_ms": int(comp.get("attack_ms", 0)),
+                "release_ms": int(comp.get("release_ms", 0)),
+                "threshold": int(comp.get("threshold", 0)),
+                "all_pass_q": int(comp.get("all_pass_q", 0)),
+            },
+        }
+        self.publish(f"ch{n}_state", doc, retain=True, qos=1)
+
     def publish_initial_cached_state(self) -> None:
         """Read device state and publish it as initial MQTT retained values.
 
@@ -607,6 +686,12 @@ class DeviceWorker:
             self.publish(f"ch{n}_mute/state",
                          "ON" if state["muted"] else "OFF",
                          retain=True, qos=1)
+
+            # Publish full per-channel state as a single JSON sensor — exposes
+            # phase, crossover, mixer, compressor, link group, and channel name
+            # in one message rather than 25+ individual entities. Users can
+            # extract specific fields via HA template sensors as needed.
+            self._publish_channel_state(n, state)
 
             # Merge routing row into the in-memory mirror so that
             # subsequent toggle commands build on the correct baseline.
