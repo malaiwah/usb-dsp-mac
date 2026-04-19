@@ -227,7 +227,12 @@ CMD_READ_CHANNEL_BASE = 0x0077
 #     [0]  enable    (1 = audible, 0 = muted)
 #     [1]  reserved  (always 0 in captures)
 #     [2..3]  vol_le_u16     dB = (raw - 600) / 10  (0..600 = -60..0 dB)
-#     [4..5]  delay_le_u16   samples (8 ms = 384 @ 48 kHz)
+#     [4..5]  delay_le_u16   samples (1 sample = 1 sample, exact). Firmware
+#                            clamps at 359 samples — that's 8.143 ms @ 44.1 kHz
+#                            (matches the manual's "8.1471 ms / 277 cm" max),
+#                            but only 7.479 ms when the device is run at 48 kHz.
+#                            The delay buffer is sized in taps, not in time.
+#                            Verified live: tests/loopback/test_delay_calibration.py
 #     [6]  reserved  (always 0)
 #     [7]  subidx    one of {0x01, 0x02, 0x03, 0x07, 0x08, 0x09, 0x0f, 0x12}
 #                    for cmd index 0..7 respectively. The device echoes the
@@ -293,7 +298,9 @@ BLOB_SIZE = 296
 OFF_MUTE        = 246  # 1=audible, 0=muted (INVERTED from leon's polarity)
 OFF_POLAR       = 247  # phase invert: 0=normal, 1=inverted (180°)
 OFF_GAIN        = 248  # u16 LE; raw = (dB * 10) + 600; range 0..600 = -60..0 dB
-OFF_DELAY       = 250  # u16 LE; samples (or cm-step index)
+OFF_DELAY       = 250  # u16 LE; samples — exact 1:1, capped at 359 (firmware
+                       # clamps; matches 8.14 ms @ 44.1 kHz, 7.48 ms @ 48 kHz).
+                       # Empirical: tests/loopback/test_delay_calibration.py
 OFF_EQ_MODE     = 252  # EQ enable/bypass flag
 OFF_SPK_TYPE    = 253  # speaker-role index; one of CHANNEL_SUBIDX by default
 
