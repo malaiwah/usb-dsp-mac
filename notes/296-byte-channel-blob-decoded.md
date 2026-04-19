@@ -249,3 +249,58 @@ In our codebase (`/Users/mbelleau/Code/usb_dsp_mac/dsp408/`):
 - `protocol.py` — frame format + opcode constants
 - `device.py:parse_channel_state_blob()` — currently extracts 4 fields, target ~25
 - `mqtt.py:DeviceWorker.build_discovery_payload()` — one new entity per new field
+
+---
+
+## ESP32 stretch — correction (added after dual-USB confirmation)
+
+**Earlier scoping was wrong.** The DSP-408 has TWO USB ports, not one:
+
+- **USB-B (back)** — the HID device port we use today. Our driver is the host.
+- **USB-A (front)** — a USB **host** port for the DSP-BT4.0 dongle.
+  Confirmed by firmware analysis: `STM32 USB_OTG_FS` peripheral at `0x50000000` is
+  referenced 3 times in `downloads/DSP-408-Firmware-V6.21.bin`, separate from the
+  USB-device peripheral at `0x40005C00` that drives the back port.
+
+That changes the ESP32 path entirely. The ESP32 just needs to be a USB **device**
+pretending to be a DSP-BT4.0 dongle on the front port. Every ESP32-S2/S3/C3 (and
+indeed ESP32-C6, RP2040, etc.) does USB-device mode out of the box — no TinyUSB host,
+no exotic chip selection. **An ESP32-S2 at ~$3 is enough.**
+
+What we still need to learn:
+
+1. **What USB class does the DSP-BT4.0 dongle present?** Most likely options:
+   - CDC-ACM (USB virtual serial port — typical of cheap BLE dongles built on CC2540 + CH340)
+   - Vendor-specific bulk endpoints (raw byte stream)
+   - Less likely: HID
+2. **What VID/PID does the firmware look for?** The host enumeration code in firmware
+   (search for `USB_OTG_FS_HOST_BASE` reads + USB descriptor parsing routines) will
+   tell us if it accepts any CDC device or only a specific Dayton VID.
+3. **What's the wire framing on top of that USB stream?** Almost certainly the same
+   `80 80 80 EE | dir | ver | seq | cat | cmd | len | payload | xor | aa` envelope —
+   leon v1.23's BLE/SPP code uses exactly this format, and the BT dongle internally
+   converts BLE SPP frames to USB. So the front-port byte stream is probably 1:1 with
+   our HID frame minus the 1-byte report-ID prefix.
+
+How to confirm without buying a dongle:
+- **Firmware analysis**: locate the USB_OTG_FS host driver setup in the firmware,
+  identify the class driver it loads (CDC vs vendor) and any VID/PID match logic.
+- **Existing captures**: nothing in our `captures/` involves the front port — they're
+  all USB-B HID. We'd need a fresh Linux USB capture of the dongle plugged into a PC.
+
+**MVP for the ESP32 sub-project, revised:**
+1. Sanity-prove the front-port USB class (above).
+2. ESP32-S2 firmware: USB device class matching the dongle, parse `80 80 80 EE` frames.
+3. Mirror the Python `device.py` logic: cache state, debounce writes, handle
+   master-vol/mute + per-channel vol/mute first.
+4. Expose via ESPHome native API or MQTT — every control becomes a number/switch.
+5. Wi-Fi configures via WiFiManager captive portal; HA discovery just works.
+
+Roughly **1 weekend of work once the USB class is confirmed**, vs the ~1 week of
+TinyUSB-host pain I estimated when I thought we needed to USB-host the DSP-408.
+
+The hardware story becomes: plug ESP32-S2 dev board into the DSP's front USB-A port
+(use a USB-A male to USB-A male cable, or solder the ESP directly to a USB-A plug).
+Power can come from either the DSP's port (5V is on the front USB) or from a separate
+USB power supply. No Pi, no MQTT broker setup unless you already have one — ESPHome's
+native API is enough.
