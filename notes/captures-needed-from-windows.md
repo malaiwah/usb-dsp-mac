@@ -282,7 +282,70 @@ no-op.  Worst-case: nothing to capture.
 
 ---
 
-## 8. Bonus: catch the unknown `cmd=0x60 cat=0x09` in context
+## 8. VU-meter / live level data path  (high value — blocks MQTT meters)
+
+**What we don't know:** where the live VU-meter byte stream actually
+comes from when the GUI's *Streaming* toggle is ON.  Empirical probing
+on the `loopback-rig` branch (`tests/loopback/_probe_state13.py` and
+`_probe_idle_poll.py`) tested the two obvious candidates and **both
+failed**:
+
+- `cmd=0x13` (10 bytes, currently exposed as `read_state_0x13()`) is
+  **completely static**: every byte unchanged across -60 → 0 dBFS sweeps
+  on DSP IN 1 *and* IN 2, with the routed output muted, with master
+  muted.  Not meters.
+- `cmd=0x03` (15 bytes, exposed as `idle_poll()`) is also completely
+  static under the same sweep — last byte is always `0x01`, the other
+  14 are zero whether audio is playing or not.
+
+The existing `windows-04c-stream-nostream-stream.pcapng` shows the GUI
+spamming `cmd=0x03` at ~30 Hz during streaming, but that capture was
+taken with **no audio actually flowing through the device** — the GUI
+was just toggling settings.  So the 14 leading zeros in the response
+might be meters that simply happened to read 0, *or* meters live on a
+totally different cmd / endpoint that the streaming toggle enables.
+
+**Repro steps:**
+1.  Wire a stereo audio source into Scarlett OUT 1+2 → DSP IN 1+2 (or
+    use the GUI's own playback path if it has one).  *Audio must
+    actually be flowing while the capture runs* — that's the whole
+    point of this capture vs. the existing one.
+2.  Start USBPcap.
+3.  Click *Streaming → ON*.
+4.  Play a tone or music for 5–10 s with audible level changes
+    (start quiet, ramp up, mute, ramp again).  Note timestamps.
+5.  Click *Streaming → OFF*.
+6.  Stop the capture.
+
+**What to look for in the pcapng:**
+- During streaming-ON, are the device→host `cmd=0x03` 15-byte payloads
+  *non-zero* and varying with the tone?  If yes, `cmd=0x03` IS the
+  meter cmd and we need to repeat the loopback probe but emit the
+  exact host→device `cmd=0x03 data="Custom"` write before each read
+  (we tested only the plain READ form — maybe the device only emits
+  meter values after the host's write nudges it).
+- If `cmd=0x03` payloads are still zero: scan ALL interrupt-IN frames
+  during the streaming window for *any* cmd whose payload bytes vary
+  in time.  Likely candidates: `cmd=0x60`, anything else > 0x40 we
+  haven't seen as a read.  Also check whether bulk or isochronous
+  endpoints get traffic during streaming (the analyzer currently
+  filters to interrupt — check raw `tshark` output).
+- Cross-reference: does *any* bidirectional cmd start firing only when
+  streaming toggles on?  That's our meter cmd.
+
+**Validation plan once decoded:**
+- Loopback rig — drive a known tone level into IN 1, poll the decoded
+  meter cmd, fit a dB curve to the byte values.  Should also show
+  byte-to-channel mapping (4 inputs + 8 outputs + 2 master / 14? other
+  shape?).
+- Then implement the MQTT live-meters feature with configurable
+  `meter_poll_hz` (separate from the slow state poll), noise-floor
+  threshold gating to avoid spamming the broker, and a binary
+  (`has_audio`) vs continuous (`level_db`) per-channel mode toggle.
+
+---
+
+## 9. Bonus: catch the unknown `cmd=0x60 cat=0x09` in context
 
 A single all-zero `cmd=0x60` write at `t≈10s` shows up in
 `windows-04b-volumes-mute-presets.pcapng` and is otherwise unexplained.
