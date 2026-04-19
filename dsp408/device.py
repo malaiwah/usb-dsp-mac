@@ -529,62 +529,67 @@ class Device:
     def parse_channel_state_blob(blob: bytes, channel: int) -> dict | None:
         """Extract volume, mute, and delay from a 296-byte channel blob.
 
-        The blob returned by cmd=0x77NN (read_channel_state) embeds the
-        channel's write-format record ``[en, 00, vol_lo, vol_hi, dly_lo,
-        dly_hi, 00, subidx]`` at some offset (typically near byte 246).
-        This method locates that record by scanning the blob from the
-        RIGHT (highest offset first), searching for the known ``subidx``
-        byte for ``channel`` while validating the surrounding fields.
+        The blob returned by cmd=0x77NN (read_channel_state) is the 296-byte
+        channel state struct that the firmware keeps in RAM.  The last 8
+        bytes of the first 254 bytes hold the write-format channel record:
 
-        Why right-to-left: the subidx for channel 0 is 0x01, which also
-        equals a valid ``en_bit`` value.  Scanning from the right means
-        we find the real record (near offset 246, where the subidx sits
-        at position +7 within the record) before reaching the spurious
-        early match (further left, where an ``en_bit=0x01`` byte could
-        appear seven positions to the left of a zero run that satisfies
-        all other constraints).
+        .. code-block:: text
 
-        Note on routing: the routing row for this output is also stored
-        in the blob, but cannot be reliably parsed without knowing its
-        exact byte offset — the pattern ``[x, x, x, x, 0, 0, 0, 0]``
-        (x ∈ {0x00, 0x64}) is too ambiguous against incidental zero runs.
-        Routing state should be tracked in-memory (see
-        :meth:`set_routing` and ``DeviceWorker._routing_mirror``).
+            offset  field
+            246     en_bit    1 = audible, 0 = muted
+            247     reserved  always 0x00
+            248..249 vol_le16  raw = (dB * 10) + 600; range 0..600
+            250..251 delay_le16 delay in samples
+            252     reserved  always 0x00
+            253     subidx    channel identifier: one of CHANNEL_SUBIDX
+
+        These offsets were confirmed from:
+          1. Live device dumps of all 8 channels (every channel has the
+             same blob[0..247], then blob[248..253] with its unique subidx).
+          2. Firmware disassembly: the second ``CMP r3, #0x77`` handler
+             (file offset 0x54b8) shows ``MOV.W sl, #0x128 = 296`` as the
+             exact blob size, and the per-channel struct stride of 296 bytes.
+
+        Note on channels 6 and 7: the live device returns subidx=0x00 at
+        blob[253] for these channels (they are "uninitialized" outputs that
+        the hardware doesn't actually drive).  This method returns ``None``
+        for those — callers should fall back to cached defaults.
+
+        Note on routing: routing state is stored elsewhere in the blob;
+        the exact offset is not yet decoded.  Track routing in-memory via
+        :meth:`set_routing` / ``DeviceWorker._routing_mirror``.
 
         Returns:
             dict with keys ``db`` (float), ``muted`` (bool), and
-            ``delay`` (int samples), or None if the record cannot be
-            found in the blob.
+            ``delay`` (int samples), or None if the blob is too short or
+            the subidx at blob[253] doesn't match this channel.
         """
         if not 0 <= channel <= 7:
             raise ValueError(f"channel must be in 0..7, got {channel}")
-        if len(blob) < 8:
+        # Need at least through offset 253 (the subidx byte).
+        if len(blob) < 254:
             return None
 
         target_subidx = CHANNEL_SUBIDX[channel]
 
-        # Scan right-to-left so the real record is found first.
-        for i in range(len(blob) - 8, -1, -1):
-            if blob[i + 7] != target_subidx:
-                continue
-            if blob[i + 6] != 0x00:
-                continue
-            if blob[i] not in (0, 1):
-                continue
-            if blob[i + 1] != 0x00:
-                continue
-            cand_vol = int.from_bytes(blob[i + 2: i + 4], "little")
-            if not (0 <= cand_vol <= CHANNEL_VOL_MAX):
-                continue
-            # All constraints satisfied.
-            en_bit = blob[i]
-            raw_vol = cand_vol
-            raw_delay = int.from_bytes(blob[i + 4: i + 6], "little")
-            db = (raw_vol - CHANNEL_VOL_OFFSET) / 10.0
-            muted = (en_bit == 0)
-            return {"db": db, "muted": muted, "delay": raw_delay}
+        # Fixed-offset read: the write-format record is always at bytes 246..253.
+        # Channels 6 and 7 have subidx=0x00 (uninitialized) — return None so
+        # the caller falls back to cached defaults rather than returning garbage.
+        if blob[253] != target_subidx:
+            return None
 
-        return None
+        en_bit = blob[246]
+        if en_bit not in (0, 1):
+            return None  # corrupt blob
+
+        raw_vol = int.from_bytes(blob[248:250], "little")
+        if not (0 <= raw_vol <= CHANNEL_VOL_MAX):
+            return None  # corrupt blob
+
+        raw_delay = int.from_bytes(blob[250:252], "little")
+        db = (raw_vol - CHANNEL_VOL_OFFSET) / 10.0
+        muted = (en_bit == 0)
+        return {"db": db, "muted": muted, "delay": raw_delay}
 
     def get_channel(self, channel: int) -> dict:
         """Read per-channel state from the device and return it.

@@ -334,34 +334,58 @@ def test_parse_channel_blob_vol_mute(channel, db, muted, delay) -> None:
 
 
 def test_parse_channel_blob_returns_none_for_bad_blob() -> None:
-    """A blob with no recognisable record returns None."""
-    blob = bytes(296)   # all zeros — no valid en_bit/subidx pattern
-    # channel 0 has subidx=0x01; all-zero blob has no byte == 1 with
-    # the correct constraints, so the parser should return None.
+    """A blob with wrong subidx at offset 253 returns None."""
+    # all-zeros blob: blob[253] == 0x00, but channel 0 expects subidx=0x01
+    blob = bytes(296)
     result = Device.parse_channel_state_blob(blob, 0)
     assert result is None
 
 
-def test_parse_channel_blob_all_channels_have_unique_subidx() -> None:
-    """Each channel's subidx is unique enough that the parser selects
-    the right record even when all 8 channels' records are embedded."""
+def test_parse_channel_blob_returns_none_when_too_short() -> None:
+    """A blob shorter than 254 bytes returns None (can't reach offset 253)."""
+    blob = bytes(253)  # one byte short of having a valid subidx field
+    result = Device.parse_channel_state_blob(blob, 0)
+    assert result is None
+
+
+def test_parse_channel_blob_all_channels_read_from_fixed_offset() -> None:
+    """Parser reads the per-channel record from the fixed offset 246..253.
+
+    Each channel's blob is built with the correct record at the canonical
+    offset (246).  The parser should find it, ignore bytes elsewhere, and
+    return the right volume for each channel.
+    """
     from dsp408.protocol import CHANNEL_SUBIDX
-    # Build one big blob that has records for all 8 channels at
-    # staggered offsets (8 bytes apart).
-    blob = bytearray(296)
-    for ch in range(8):
-        raw_vol = (ch + 1) * 50   # 50, 100, 150, ... (all valid)
-        en = 1
-        si = CHANNEL_SUBIDX[ch]
-        rec = bytes([en, 0, raw_vol & 0xFF, (raw_vol >> 8) & 0xFF, 0, 0, 0, si])
-        offset = 8 * ch
-        blob[offset: offset + 8] = rec
 
     for ch in range(8):
-        result = Device.parse_channel_state_blob(bytes(blob), ch)
-        assert result is not None, f"channel {ch} not found"
-        expected_vol = (ch + 1) * 50
-        expected_db = (expected_vol - 600) / 10.0
-        assert abs(result["db"] - expected_db) < 0.01, (
+        raw_vol = (ch + 1) * 50   # 50, 100, ..., 400 — all valid
+        expected_db = (raw_vol - 600) / 10.0
+        blob = _make_channel_blob(ch, expected_db, muted=False)
+        # Sanity-check that our helper puts the record at offset 246.
+        assert blob[253] == CHANNEL_SUBIDX[ch], (
+            f"helper placed wrong subidx for ch {ch}"
+        )
+        result = Device.parse_channel_state_blob(blob, ch)
+        assert result is not None, f"channel {ch}: parser returned None"
+        assert abs(result["db"] - expected_db) < 0.1, (
             f"ch {ch}: db={result['db']} expected {expected_db}"
         )
+
+
+def test_parse_channel_blob_ignores_matching_subidx_elsewhere() -> None:
+    """A subidx byte that appears at a wrong offset should NOT fool the parser.
+
+    We build a blob where blob[253] is the WRONG subidx for channel 0 (i.e.
+    0x02, which is channel 1's subidx) but inject channel 0's correct record
+    at some other offset.  The parser must return None because it only reads
+    from the fixed offset.
+    """
+    blob = bytearray(296)
+    # Plant channel 0's correct record at offset 0 (NOT 246).
+    from dsp408.protocol import CHANNEL_SUBIDX
+    si0 = CHANNEL_SUBIDX[0]  # 0x01
+    blob[0:8] = bytes([1, 0, 0x58, 0x02, 0, 0, 0, si0])  # vol=600, en=1
+    # Offset 253 has some other value (not channel 0's subidx).
+    blob[253] = CHANNEL_SUBIDX[1]  # 0x02 ≠ 0x01
+    result = Device.parse_channel_state_blob(bytes(blob), 0)
+    assert result is None, "parser should ignore record not at offset 246"
