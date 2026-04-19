@@ -1061,14 +1061,29 @@ class Device:
         self.set_routing_levels(output_idx, levels)
 
     # ── crossover (HPF + LPF per channel) ──────────────────────────────
-    # Filter type values seen in capture (one of these per byte at
-    # blob[256]/blob[260], confirmed live):
+    # Filter type values for blob[256] (HPF) and blob[260] (LPF).  The
+    # Windows GUI dropdown labels them "Butterworth / Bessel / Linkwitz-
+    # Riley / Defeat".  Empirically validated 2026-04-19 via Scarlett
+    # loopback + discrete-tone sweep — see
+    # tests/loopback/test_crossover_characterization.py and the saved
+    # response plot at docs/measurements/crossover_filter_types.png.
+    #
+    # Surprise finding: type=3 ("Defeat" in the UI) produces the IDENTICAL
+    # filter response as type=2 (Linkwitz-Riley) — same -3 dB knee, same
+    # -6 dB knee, same asymptotic slope, all within 0.3 dB measurement
+    # noise.  The Windows GUI exposes it as a separate option but the
+    # firmware aliases it to LR.
     HPF_LPF_FILTER_BUTTERWORTH = 0
     HPF_LPF_FILTER_BESSEL = 1
     HPF_LPF_FILTER_LR = 2          # Linkwitz-Riley
-    HPF_LPF_FILTER_TYPE_3 = 3      # 4th type seen in capture; identity TBD
-    # Slope is dB/octave: 0..7 = 6/12/18/24/30/36/42/48 dB/oct.  Value 8
-    # disables the filter entirely.  Hardware default = 1 (12 dB/oct).
+    HPF_LPF_FILTER_DEFEAT = 3      # Windows-UI label; aliases to LR in firmware
+
+    # Slope is dB/octave: 0..7 = 6/12/18/24/30/36/42/48 dB/oct.
+    # ⚠ Value 8 was labelled "Off" in the Android decompile, but live
+    # testing shows it MUTES the channel rather than bypassing the filter
+    # (signal drops to noise floor when slope=8 is set on either HPF or
+    # LPF).  To get a wide-open passband instead, write an HPF freq well
+    # below 20 Hz and an LPF freq above 22 kHz with slope=0 (6 dB/oct).
     HPF_LPF_SLOPE_OFF = 8
 
     def set_crossover(
@@ -1092,9 +1107,14 @@ class Device:
         Args:
             channel:    0..7 (output channel index).
             hpf_freq:   high-pass cutoff in Hz, u16 (firmware default 20).
-            hpf_filter: 0=Butterworth, 1=Bessel, 2=Linkwitz-Riley, 3=?
+            hpf_filter: 0=Butterworth, 1=Bessel, 2=Linkwitz-Riley,
+                        3=Defeat (Windows-UI label; aliases LR — see the
+                        ``HPF_LPF_FILTER_*`` class constants).
             hpf_slope:  dB/octave step: 0=6, 1=12, 2=18, 3=24, 4=30,
-                        5=36, 6=42, 7=48; 8 disables the filter.
+                        5=36, 6=42, 7=48.  Value 8 MUTES the channel
+                        rather than bypassing the filter — to disable
+                        a filter, push its freq far outside the audio
+                        band and use slope=0.
             lpf_freq:   low-pass cutoff in Hz (firmware default 20000).
             lpf_filter: same range as ``hpf_filter``.
             lpf_slope:  same range as ``hpf_slope``.

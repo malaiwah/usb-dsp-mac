@@ -741,11 +741,13 @@ def test_set_crossover_rejects_bad_args() -> None:
 
 
 def test_set_crossover_constants_match_blob_decode() -> None:
-    """Sanity — the filter-type and slope constants on Device line up with
-    the blob-parser's interpretation (the Android-app decompile only knew
-    types 0..2; we discovered type=3 in capture and named it provisionally)."""
+    """Sanity — the filter-type and slope constants on Device match what's
+    documented in the blob parser. The Android-app decompile only knew
+    types 0..2; type=3 ("Defeat" in the Windows GUI) was identified by
+    Scarlett-loopback discrete-tone characterization (2026-04-19) as
+    aliasing Linkwitz-Riley — see test_crossover_characterization.py."""
     assert Device.HPF_LPF_FILTER_BUTTERWORTH == 0
     assert Device.HPF_LPF_FILTER_BESSEL == 1
     assert Device.HPF_LPF_FILTER_LR == 2
-    assert Device.HPF_LPF_FILTER_TYPE_3 == 3
+    assert Device.HPF_LPF_FILTER_DEFEAT == 3
     assert Device.HPF_LPF_SLOPE_OFF == 8
