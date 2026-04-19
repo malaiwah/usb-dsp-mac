@@ -16,11 +16,9 @@ from dsp408.protocol import (
     CAT_PARAM,
     CAT_STATE,
     CMD_MASTER,
-    CMD_ROUTING_BASE,
-    CMD_WRITE_CHANNEL_BASE,
-    Frame,
     DIR_WRITE,
     DIR_WRITE_ACK,
+    Frame,
     parse_frame,
 )
 
@@ -225,7 +223,7 @@ def test_master_volume_clamps_to_db_range() -> None:
 
 def test_master_get_decodes_correctly() -> None:
     """get_master() should round-trip the payload format."""
-    from dsp408.protocol import build_frame, DIR_RESP
+    from dsp408.protocol import DIR_RESP, build_frame
     d, t = _make_device()
     # Queue a synthetic master read reply: lvl=50 (-10 dB), mute_bit=1 (on)
     payload = bytes([50, 0, 0, 0x32, 0, 0x32, 1, 0])
@@ -258,7 +256,7 @@ def test_writes_always_use_seq_zero() -> None:
 
 def test_reads_keep_auto_seq() -> None:
     """Reads must still auto-increment so we can match late replies."""
-    from dsp408.protocol import build_frame, DIR_RESP, CMD_GET_INFO
+    from dsp408.protocol import CMD_GET_INFO, DIR_RESP, build_frame
     d, t = _make_device()
     # Queue 3 read replies (one per call)
     for s in (0, 1, 2):
