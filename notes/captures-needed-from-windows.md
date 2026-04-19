@@ -18,6 +18,54 @@ the resulting pcapng so the encoding can be decoded without having to ask
 
 ---
 
+## ✅ 0a. Status as of 2026-04-19 LATE evening — DEFINITIVE on compressor + meters
+
+User inspected the Windows DSP-408.exe V1.24 GUI and confirmed:
+  * **No compressor controls anywhere in the UI** — completes the
+    4-way confirmation: (1) live audio rig negative-result matrix,
+    (2) firmware disasm finds no DSP code path consuming compressor
+    blob bytes, (3) leon Android source has no enable bit and no
+    audio-engine consumer, (4) **Windows GUI doesn't expose it**.
+    The compressor is officially a non-feature of v1.06.
+  * **No VU meter / level visualization in the UI** — same 4-way
+    confirmation. The audio-level path doesn't exist in this stack
+    at any layer. Item #8 below (VU-meter capture) is now formally
+    impossible — there's nothing to capture.
+
+User also discovered: **the per-cell input mixer percentages ARE
+exposed in the Windows GUI**, hidden behind a click-through button.
+Confirms our long-standing finding that firmware accepts u8 0..255
+per cell (not just 0/100). The Gradio web UI now exposes this matrix
+directly in the Mixer tab.
+
+## ✅ 0b. INPUT subsystem live-audio results — only POLAR works
+
+Fresh loopback-rig validation 2026-04-19 of the input-side processing
+(DataType=3, cat=0x03) we decoded earlier in the day. Tested all six
+leon-documented MISC fields against real audio:
+
+| Field    | Wire | Audio behavior |
+|----------|------|----------------|
+| polar    | ✓    | **WORKS** — phase flip confirmed via cross-correlation |
+| muted    | ✓    | INERT — no attenuation |
+| volume   | ✓    | INERT — full u8 sweep produces 0 dB delta |
+| delay    | ✓    | INERT (probable) — lag is noise floor |
+| EQ band  | ✓    | INERT — +12 dB peak at 1 kHz produces 0 dB measured |
+| noisegate| ✓    | INERT — no gating below threshold |
+
+**Same pattern as compressor + meters**: the firmware exposes the
+wire surface (writes round-trip exactly through reads) but the audio
+engine doesn't consume the parameters. The full input-processing
+subsystem in v1.06 is essentially a SIngle-bit polar flip dressed up
+with five inert fields of UI scaffolding.
+
+Bonus finding: ``apply_speaker_template`` (writing the spk_type byte)
+causes a **flat ~+18 dB gain change**, not tonal shaping — different
+templates (`sub`, `fl`) produce identical magnitude responses across
+100 Hz / 1 kHz / 10 kHz. The DSP slot reassignment changes internal
+pre-gain, not crossover/EQ defaults. Documented as a warning in the
+Device.apply_speaker_template docstring.
+
 ## ✅ 0. Status as of 2026-04-19 evening
 
 Major protocol expansion landed via the leon Android v1.23 source mining
