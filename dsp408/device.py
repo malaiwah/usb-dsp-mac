@@ -863,6 +863,25 @@ class Device:
         ``CHANNEL_SUBIDX[channel]``.  Preserving the correct subidx prevents
         accidentally overwriting the firmware's DSP type assignment.
 
+        ⚠ **Startup write-drop quirk** (verified live 2026-04-19):
+            The firmware silently drops the first ~5–6 cmd=0x1FNN writes
+            that arrive faster than it can process — back-to-back writes
+            with no intervening reads/sleeps lose their early entries even
+            though every write returns a clean ACK.  Master writes and
+            non-channel commands do NOT count toward this quota.
+
+            Mitigation pattern (used by every loopback test): warm up by
+            doing 8 set+read cycles before relying on writes to land::
+
+                for ch in range(8):
+                    dsp.set_channel(ch, db=0.0, muted=False)
+                # then any audio measurement / time.sleep(>~1s) / per-ch
+                # readback gives the firmware time to drain its queue.
+
+            What does NOT work: 8 back-to-back set_channel() calls with
+            no reads or sleeps in between — the firmware processes the
+            queue in bulk and drops everything past its first slot.
+
         Args:
             polar: True/False to set/clear 180° phase invert; None (default)
                 preserves the cached polar value so callers that don't care
