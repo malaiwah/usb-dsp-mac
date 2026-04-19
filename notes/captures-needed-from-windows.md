@@ -194,16 +194,62 @@ acoustic response.
 
 ---
 
-## 5. Compressor — full parameter sweep  (medium value)
+## 5. Compressor — INERT in firmware v1.06 (UI-side test needed)
 
-**What we have:** 4 frames in `windows-04b-volumes-mute-presets.pcapng`
-that toggled the compressor enable bit on/off for ch6 and ch7, with
-fixed values (`Q=420, attack=56 ms, release=500 ms, threshold=0`).  That
-nailed the cmd (`0x2300 + ch`) and 8-byte payload layout, **and the
-wire encoding has since been verified live**: writes to cmd=0x2301
-land at blob[278..285] and round-trip exactly through
-`read_channel_state()` (verified 2026-04-19, see `Device.set_compressor()`).
-What we still don't know:
+**Wire encoding ✓**, **block behavior ✗**.  As of 2026-04-19 the
+loopback rig has tested every combination of compressor parameters
+across six independent theories and the audio engine **does not
+respond to any of them**.  See `tests/loopback/_probe_compressor.py`
+and `_probe_compressor_extreme.py` for the full negative-result
+matrix; summary:
+
+  * Threshold sweep 0..255, hot input (-3 dBFS), atk=1ms/rel=10ms,
+    enable=1 → output never moves more than ±0.05 dB.
+  * Enable byte tried as 0/1/2/0x10/0xFF → identical.
+  * Attack/release programmed across 10..2000 ms → measured envelope
+    time-constants stay pinned at the audio system's ~93 ms baseline.
+  * blob[252] (formerly `eq_mode`) toggled as alt-enable → no effect.
+  * Master-volume "kick" after each compressor write → no effect.
+  * Ch6 (the channel exercised in windows-04b's GUI toggle) → wire
+    round-trips identically.
+
+**Best guess:** the compressor block in firmware v1.06
+(`MYDW-AV1.06`, the only firmware we've seen) is a planned-but-not-
+implemented feature.  The blob has the bytes, the cmd is acked, the
+values round-trip — but the audio engine never acts on them.
+
+**What's needed to confirm:** verify whether the **Windows GUI's own
+compressor toggle** actually engages compression audibly.  This is a
+GUI-side audible test, not a USB capture:
+
+  1. Set up audio playback through one DSP-408 channel — drive a
+     known hot signal (e.g. -3 dBFS sine or pink noise) through a
+     channel with a meter you can read.
+  2. In the official Windows GUI, on that same channel, set
+     compressor threshold to 0 dB (most aggressive), short attack
+     (~1 ms), short release (~10 ms), enable.
+  3. Listen + watch the output meter.  Does the meter visibly drop
+     when enable is toggled?  Does the audio audibly compress?
+  4. If YES → there's a magic activation step the Windows GUI does
+     that we missed in the existing capture; need a fresh capture
+     with audio actually flowing while toggling.
+  5. If NO → the compressor really is unimplemented in v1.06; the
+     Windows GUI exposes it as a UI placeholder.  Mark feature as
+     "dormant pending firmware update" and move on.
+
+If the answer is YES, the follow-up capture should record the full
+sequence around the toggle (handshake + compressor frame + any
+adjacent writes that might be the activation magic).  Look for any
+cmd we don't already know, or for a side-effect on a known cmd
+(e.g. `cmd=0x60` or one of the `cmd=0x05` master-state writes
+carrying a payload variation we missed).
+
+(The original "full parameter sweep" plan below is preserved for the
+case where the Windows-side test reveals the block is actually
+working — then we'd want the sweep to map dB ranges and ratio
+encoding.)
+
+What we still don't know (assuming the block is actually live):
 - What the `Q_le16` field actually does — it might be ratio (1:N), it
   might be the all-pass-Q the leon decompile claims, or it might be
   something else entirely.
