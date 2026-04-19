@@ -60,6 +60,7 @@ from .protocol import (
     CMD_ROUTING_BASE,
     CMD_STATUS,
     CMD_WRITE_CHANNEL_BASE,
+    CMD_WRITE_CROSSOVER_BASE,
     DIR_CMD,
     DIR_RESP,
     DIR_WRITE,
@@ -1058,6 +1059,69 @@ class Device:
             ROUTING_ON if in4 else ROUTING_OFF,
         ]
         self.set_routing_levels(output_idx, levels)
+
+    # ── crossover (HPF + LPF per channel) ──────────────────────────────
+    # Filter type values seen in capture (one of these per byte at
+    # blob[256]/blob[260], confirmed live):
+    HPF_LPF_FILTER_BUTTERWORTH = 0
+    HPF_LPF_FILTER_BESSEL = 1
+    HPF_LPF_FILTER_LR = 2          # Linkwitz-Riley
+    HPF_LPF_FILTER_TYPE_3 = 3      # 4th type seen in capture; identity TBD
+    # Slope is dB/octave: 0..7 = 6/12/18/24/30/36/42/48 dB/oct.  Value 8
+    # disables the filter entirely.  Hardware default = 1 (12 dB/oct).
+    HPF_LPF_SLOPE_OFF = 8
+
+    def set_crossover(
+        self,
+        channel: int,
+        hpf_freq: int,
+        hpf_filter: int,
+        hpf_slope: int,
+        lpf_freq: int,
+        lpf_filter: int,
+        lpf_slope: int,
+    ) -> None:
+        """Write the per-channel HPF + LPF crossover record in one frame.
+
+        Encoding decoded from ``captures/full-sequence.pcapng`` (Windows
+        DSP-408 V1.24 GUI changing filter types) and verified live on
+        real hardware 2026-04-19 — the 8-byte payload mirrors
+        ``blob[254..261]`` exactly, so a write here shows up surgically
+        at those offsets in the next ``read_channel_state()`` blob.
+
+        Args:
+            channel:    0..7 (output channel index).
+            hpf_freq:   high-pass cutoff in Hz, u16 (firmware default 20).
+            hpf_filter: 0=Butterworth, 1=Bessel, 2=Linkwitz-Riley, 3=?
+            hpf_slope:  dB/octave step: 0=6, 1=12, 2=18, 3=24, 4=30,
+                        5=36, 6=42, 7=48; 8 disables the filter.
+            lpf_freq:   low-pass cutoff in Hz (firmware default 20000).
+            lpf_filter: same range as ``hpf_filter``.
+            lpf_slope:  same range as ``hpf_slope``.
+
+        Raises:
+            ValueError: any param out of range.
+        """
+        if not 0 <= channel <= 7:
+            raise ValueError(f"channel must be in 0..7, got {channel}")
+        for name, val in (("hpf_freq", hpf_freq), ("lpf_freq", lpf_freq)):
+            if not 0 <= val <= 0xFFFF:
+                raise ValueError(f"{name} must fit in u16, got {val}")
+        for name, val in (("hpf_filter", hpf_filter),
+                          ("lpf_filter", lpf_filter)):
+            if not 0 <= val <= 3:
+                raise ValueError(f"{name} must be 0..3, got {val}")
+        for name, val in (("hpf_slope", hpf_slope), ("lpf_slope", lpf_slope)):
+            if not 0 <= val <= 8:
+                raise ValueError(f"{name} must be 0..8, got {val}")
+        payload = bytes([
+            hpf_freq & 0xFF, (hpf_freq >> 8) & 0xFF,
+            hpf_filter, hpf_slope,
+            lpf_freq & 0xFF, (lpf_freq >> 8) & 0xFF,
+            lpf_filter, lpf_slope,
+        ])
+        cmd = CMD_WRITE_CROSSOVER_BASE + channel  # 0x12000..0x12007
+        self.write_raw(cmd=cmd, data=payload, category=CAT_PARAM)
 
     # ── one-shot snapshot ──────────────────────────────────────────────
     def snapshot(self) -> DeviceInfo:

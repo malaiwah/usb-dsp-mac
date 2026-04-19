@@ -61,16 +61,22 @@ CAT_PARAM = 0x04      # parameter read/write (0x77NN, 0x1fNN, 0x2000)
 def category_hint(cmd: int) -> int:
     """Pick the right `category` byte for a given command code.
 
-    Parameter commands (0x77NN, 0x1fNN, 0x2000) use category 0x04
-    (CAT_PARAM); everything else uses 0x09 (CAT_STATE). Mirrors what
-    DSP-408.exe V1.24 emits in the Windows captures and used by the CLI
-    / Gradio UI / MQTT bridge to default the category correctly.
+    Parameter commands (0x77NN, 0x1fNN, 0x2000, 0x21NN, 0x100BC, 0x120NN)
+    use category 0x04 (CAT_PARAM); everything else uses 0x09 (CAT_STATE).
+    Mirrors what DSP-408.exe V1.24 emits in the Windows captures and
+    used by the CLI / Gradio UI / MQTT bridge to default the category
+    correctly.
     """
     if 0x7700 <= cmd <= 0x77FF:
         return CAT_PARAM
     if 0x1F00 <= cmd <= 0x1FFF:
         return CAT_PARAM
     if cmd == 0x2000:
+        return CAT_PARAM
+    if 0x2100 <= cmd <= 0x21FF:
+        return CAT_PARAM
+    # EQ band writes 0x10000..0x10FFF and crossover 0x12000..0x12007
+    if 0x10000 <= cmd <= 0x12FFF:
         return CAT_PARAM
     return CAT_STATE
 
@@ -259,6 +265,32 @@ CMD_MASTER = 0x0005
 
 CMD_WRITE_GLOBAL = 0x2000       # writes global params (layout TBD)
 
+# Per-channel HPF + LPF crossover writes (0x12000..0x12007 = ch1..ch8).
+# 8-byte payload mirrors blob[254..261] exactly:
+#     [0..1]  HPF freq  Hz LE16  (default 20)
+#     [2]     HPF filter type    (0=BW, 1=Bessel, 2=LR, 3=?)
+#     [3]     HPF slope          (0..7 = 6/12/18/24/30/36/42/48 dB/oct, 8=Off)
+#     [4..5]  LPF freq  Hz LE16  (default 20000)
+#     [6]     LPF filter type
+#     [7]     LPF slope
+# Verified live on hardware 2026-04-19 — surgical write, exact round-trip
+# via blob readback at OFF_HPF_FREQ..OFF_LPF_SLOPE. Decoded from the
+# windows-V1.24 GUI's filter-type-change writes in
+# captures/full-sequence.pcapng.
+CMD_WRITE_CROSSOVER_BASE = 0x12000
+
+# Per-channel parametric-EQ band writes (0x10BCC where B=band, C=channel).
+# B = 0..N (band index, 0-indexed; N TBD — capture only goes to band 1).
+# C = 0..7 (channel index, 0-indexed).
+# 8-byte payload (decoded from full-sequence.pcapng, NOT YET LIVE-VALIDATED):
+#     [0..1]  freq Hz LE16
+#     [2..3]  gain raw LE16   dB = (raw - 600) / 10  (same as channel volume)
+#     [4]     0x34 = 52       constant in every observed write — Q? band id?
+#     [5..7]  zeros
+# The 296-byte variant (cmd=0x10000+ch with len=296) writes the entire
+# channel state struct; appears to be how the GUI does "reset EQ to flat".
+CMD_WRITE_EQ_BAND_BASE = 0x10000
+
 # Master payload constants
 MASTER_LEVEL_MIN = 0     # raw = -60 dB
 MASTER_LEVEL_MAX = 66    # raw = +6 dB
@@ -415,6 +447,8 @@ __all__ = [
     "CMD_READ_CHANNEL_BASE",
     "CMD_WRITE_CHANNEL_BASE",
     "CMD_WRITE_GLOBAL",
+    "CMD_WRITE_CROSSOVER_BASE",
+    "CMD_WRITE_EQ_BAND_BASE",
     "CMD_ROUTING_BASE",
     "CMD_MASTER",
     "MASTER_LEVEL_MIN",

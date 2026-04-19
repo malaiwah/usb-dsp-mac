@@ -681,3 +681,71 @@ def test_system_register_write_rejects_non_u16() -> None:
         d.system_register_write(-1)
     with pytest.raises(ValueError):
         d.system_register_write(0x10000)
+
+
+# ── crossover (HPF + LPF per channel) ────────────────────────────────────
+@pytest.mark.parametrize(
+    "channel,hpf_freq,hpf_filter,hpf_slope,lpf_freq,lpf_filter,lpf_slope,"
+    "expected_cmd,expected_payload_hex",
+    [
+        # Hardware default — 20 Hz BW 12dB / 20 kHz BW 12dB
+        # Verified live 2026-04-19 against ch1 blob[254..261] = 14000001204e0001
+        (0, 20, 0, 1, 20000, 0, 1, 0x12000, "14 00 00 01 20 4e 00 01"),
+        # Probed live: HPF 100Hz BW 24dB / LPF 8000Hz LR 48dB → blob = 64000003401f0207
+        (0, 100, 0, 3, 8000, 2, 7, 0x12000, "64 00 00 03 40 1f 02 07"),
+        # Channel index lands in low byte: 0x12000..0x12007
+        (7, 250, 1, 2, 12000, 2, 5, 0x12007, "fa 00 01 02 e0 2e 02 05"),
+        # Slope value 8 = filter disabled (max valid slope byte)
+        (3, 80, 0, 8, 16000, 0, 8, 0x12003, "50 00 00 08 80 3e 00 08"),
+    ],
+)
+def test_set_crossover_matches_capture(
+    channel, hpf_freq, hpf_filter, hpf_slope,
+    lpf_freq, lpf_filter, lpf_slope,
+    expected_cmd, expected_payload_hex,
+) -> None:
+    d, t = _make_device()
+    d.set_crossover(channel, hpf_freq, hpf_filter, hpf_slope,
+                    lpf_freq, lpf_filter, lpf_slope)
+    cmd, cat, direction, seq = _last_meta(t)
+    assert cmd == expected_cmd
+    assert cat == CAT_PARAM
+    assert direction == DIR_WRITE
+    assert seq == 0  # WRITES use seq=0
+    expected = bytes.fromhex(expected_payload_hex.replace(" ", ""))
+    assert _last_payload(t) == expected
+
+
+def test_set_crossover_rejects_bad_args() -> None:
+    d, _ = _make_device()
+    # channel range
+    with pytest.raises(ValueError, match="channel"):
+        d.set_crossover(8, 20, 0, 1, 20000, 0, 1)
+    with pytest.raises(ValueError, match="channel"):
+        d.set_crossover(-1, 20, 0, 1, 20000, 0, 1)
+    # freq must fit in u16
+    with pytest.raises(ValueError, match="hpf_freq"):
+        d.set_crossover(0, 0x10000, 0, 1, 20000, 0, 1)
+    with pytest.raises(ValueError, match="lpf_freq"):
+        d.set_crossover(0, 20, 0, 1, -1, 0, 1)
+    # filter must be 0..3
+    with pytest.raises(ValueError, match="hpf_filter"):
+        d.set_crossover(0, 20, 4, 1, 20000, 0, 1)
+    with pytest.raises(ValueError, match="lpf_filter"):
+        d.set_crossover(0, 20, 0, 1, 20000, -1, 1)
+    # slope must be 0..8
+    with pytest.raises(ValueError, match="hpf_slope"):
+        d.set_crossover(0, 20, 0, 9, 20000, 0, 1)
+    with pytest.raises(ValueError, match="lpf_slope"):
+        d.set_crossover(0, 20, 0, 1, 20000, 0, -1)
+
+
+def test_set_crossover_constants_match_blob_decode() -> None:
+    """Sanity — the filter-type and slope constants on Device line up with
+    the blob-parser's interpretation (the Android-app decompile only knew
+    types 0..2; we discovered type=3 in capture and named it provisionally)."""
+    assert Device.HPF_LPF_FILTER_BUTTERWORTH == 0
+    assert Device.HPF_LPF_FILTER_BESSEL == 1
+    assert Device.HPF_LPF_FILTER_LR == 2
+    assert Device.HPF_LPF_FILTER_TYPE_3 == 3
+    assert Device.HPF_LPF_SLOPE_OFF == 8
