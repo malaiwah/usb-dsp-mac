@@ -1,0 +1,10 @@
+Capture: reset_to_defaults.pcapng
+Date: 2026-04-19
+App: DSP-408.exe V1.24
+
+Contents: user triggered the app's "reset to defaults" action. Intended as
+a reference for what the GUI emits when wiping device state back to
+factory defaults — useful for identifying the bulk-write pattern and
+confirming the default values of every field in the 296-byte channel blob.
+
+Same 80 80 80 ee protocol.
