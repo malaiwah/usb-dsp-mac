@@ -108,6 +108,58 @@ def test_set_routing_matches_capture(out_idx, ins, expected_cmd,
     assert _last_payload(t) == expected
 
 
+@pytest.mark.parametrize(
+    "out_idx,levels,expected_cmd,expected_payload_hex",
+    [
+        # 0x32 = 50% (= -6 dB) on IN1 only
+        (0, [0x32, 0, 0, 0], 0x2100, "32 00 00 00 00 00 00 00"),
+        # Mixed levels across all 4 inputs
+        (3, [100, 50, 25, 200], 0x2103, "64 32 19 c8 00 00 00 00"),
+        # Max u8 = +8 dB boost
+        (1, [0xFF, 0xFF, 0, 0], 0x2101, "ff ff 00 00 00 00 00 00"),
+    ],
+)
+def test_set_routing_levels_arbitrary_u8(out_idx, levels, expected_cmd,
+                                          expected_payload_hex) -> None:
+    """Verify set_routing_levels writes arbitrary u8 levels per cell.
+
+    Empirically validated: cell value is a linear amplitude scalar; values
+    above 100 boost the signal up to +8 dB at 0xFF (see
+    tests/loopback/test_routing_percentage.py for the live measurement).
+    """
+    d, t = _make_device()
+    d.set_routing_levels(out_idx, levels)
+    cmd, cat, direction, seq = _last_meta(t)
+    assert cmd == expected_cmd
+    assert cat == CAT_PARAM
+    assert direction == DIR_WRITE
+    assert seq == 0
+    expected = bytes.fromhex(expected_payload_hex.replace(" ", ""))
+    assert _last_payload(t) == expected
+
+
+def test_set_routing_levels_rejects_bad_args() -> None:
+    d, _ = _make_device()
+    with pytest.raises(ValueError, match="output_idx"):
+        d.set_routing_levels(8, [0, 0, 0, 0])
+    with pytest.raises(ValueError, match="must have 4"):
+        d.set_routing_levels(0, [100, 100, 100])
+    with pytest.raises(ValueError, match="out of u8 range"):
+        d.set_routing_levels(0, [256, 0, 0, 0])
+    with pytest.raises(ValueError, match="out of u8 range"):
+        d.set_routing_levels(0, [-1, 0, 0, 0])
+
+
+def test_set_routing_bool_calls_set_routing_levels() -> None:
+    """The bool wrapper should produce the same wire bytes as a direct
+    set_routing_levels call with the same intent."""
+    d1, t1 = _make_device()
+    d1.set_routing(0, in1=True, in2=False, in3=True, in4=False)
+    d2, t2 = _make_device()
+    d2.set_routing_levels(0, [100, 0, 100, 0])
+    assert _last_payload(t1) == _last_payload(t2)
+
+
 # ── per-channel volume + mute ───────────────────────────────────────────
 @pytest.mark.parametrize(
     "channel,db,muted,expected_cmd,expected_payload_hex",

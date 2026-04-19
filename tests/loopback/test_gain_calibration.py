@@ -25,9 +25,6 @@ import time
 sys.path.insert(0, "/home/mbelleau/dsp408")
 
 import numpy as np
-
-from dsp408 import Device, enumerate_devices
-
 from audio_io import (
     DEFAULT_SR,
     PLAYBACK_CHANNELS,
@@ -35,6 +32,8 @@ from audio_io import (
     sine,
     tone_level_at,
 )
+
+from dsp408 import Device, enumerate_devices
 
 TONE_HZ = 1000.0
 TONE_AMP_DBFS = -20.0

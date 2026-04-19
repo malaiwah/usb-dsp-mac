@@ -27,8 +27,6 @@ import time
 
 sys.path.insert(0, "/home/mbelleau/dsp408")
 
-from dsp408 import Device, enumerate_devices
-
 from audio_io import (
     log_sweep,
     mono_to_stereo,
@@ -38,6 +36,8 @@ from audio_io import (
     sine,
     tone_level_at,
 )
+
+from dsp408 import Device, enumerate_devices
 
 
 def report(label: str, cap, freq_hz: float | None = None) -> None:
@@ -105,7 +105,7 @@ def main() -> None:
         cap = play_and_record(mono_to_stereo(sweep))
         # Just verify capture succeeded; analysis comes later.
         body = slice(int(0.05 * cap.sr), len(cap) - int(0.05 * cap.sr))
-        print(f"\n--- Sweep 20Hz→20kHz on IN 1 ---")
+        print("\n--- Sweep 20Hz→20kHz on IN 1 ---")
         print(f"  IN 1 captured: rms={rms_dbfs(cap.in1[body]):+7.1f} dBFS  "
               f"peak={peak_dbfs(cap.in1[body]):+7.1f} dBFS  "
               f"({len(cap)} samples = {len(cap)/cap.sr:.2f} s)")

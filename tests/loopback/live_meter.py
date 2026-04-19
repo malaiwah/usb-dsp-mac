@@ -20,26 +20,22 @@ sys.path.insert(0, "/home/mbelleau/dsp408")
 
 import numpy as np
 import sounddevice as sd
-
-from dsp408 import Device, enumerate_devices
-
 from audio_io import (
+    CAPTURE_CHANNELS,
     DEFAULT_SR,
     PLAYBACK_CHANNELS,
-    CAPTURE_CHANNELS,
-    INT32_MAX,
     find_scarlett,
     float_to_int32,
     int32_to_float,
     rms_dbfs,
-    sine,
 )
+
+from dsp408 import Device, enumerate_devices
 
 
 def bar(db: float, width: int = 32) -> str:
     """Draw a quick ASCII level bar from -90 dBFS (left) to 0 dBFS (right)."""
-    if db < -90: db = -90
-    if db > 0: db = 0
+    db = max(-90.0, min(0.0, db))
     pct = (db + 90) / 90.0
     n = int(pct * width)
     return "[" + "#" * n + " " * (width - n) + "]"

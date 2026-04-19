@@ -53,3 +53,12 @@ extend-exclude = ["dsp-408-ui", "downloads"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP"]
 ignore = ["E501"]  # line length handled by formatter
+
+# ── pytest ────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+# Loopback tests need physical hardware (Scarlett 2i2 + DSP-408) and the
+# `sounddevice` library — exclude from default unit-test runs. Run them
+# manually on the hardware host:
+#     sg audio -c '.venv/bin/python tests/loopback/test_<name>.py'
+testpaths = ["tests"]
+norecursedirs = ["loopback"]

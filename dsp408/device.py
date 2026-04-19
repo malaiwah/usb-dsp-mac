@@ -887,23 +887,61 @@ class Device:
         return dict(self._channel_cache[channel])
 
     # ── routing matrix ─────────────────────────────────────────────────
-    def set_routing(self, output_idx: int,
-                    in1: bool, in2: bool, in3: bool, in4: bool) -> None:
-        """Set which inputs feed a given output.
+    def set_routing_levels(self, output_idx: int,
+                           levels: list[int] | tuple[int, ...]) -> None:
+        """Set per-input mix levels for one output channel.
 
-        `output_idx` is 0..7 (Out1..Out8). Each bool flips one input on
-        (0x64) or off (0x00).
+        Each routing cell is a u8 linear-amplitude scalar (verified live
+        on real hardware via Scarlett loopback test in
+        ``tests/loopback/test_routing_percentage.py``):
+
+          * 0   → off (silent)
+          * 100 → unity gain (the value our boolean ``set_routing()`` writes)
+          * 50  → -6 dB
+          * 25  → -12 dB
+          * 200 → +6 dB  (firmware allows BOOST above unity!)
+          * 255 → +8.1 dB (max u8 = max headroom, undocumented)
+
+        The Windows GUI never uses values other than 0/100, but the
+        firmware accepts the full 0..255 range with a precise
+        ``20·log10(level/100)`` dB curve.
+
+        Args:
+            output_idx: 0..7 (corresponds to OUT 1..OUT 8)
+            levels: 4 ints in [0, 255], one per IN1..IN4
+
+        Raises:
+            ValueError: output_idx out of range, or any level out of [0, 255].
         """
         if not 0 <= output_idx <= 7:
             raise ValueError(f"output_idx must be in 0..7, got {output_idx}")
+        if len(levels) != 4:
+            raise ValueError(f"levels must have 4 entries, got {len(levels)}")
+        for i, lvl in enumerate(levels):
+            if not 0 <= lvl <= 255:
+                raise ValueError(
+                    f"levels[{i}]={lvl} out of u8 range [0, 255]")
         cmd = CMD_ROUTING_BASE + output_idx  # 0x2100..0x2107
-        b = ROUTING_ON
-        o = ROUTING_OFF
-        payload = bytes([
-            b if in1 else o, b if in2 else o, b if in3 else o, b if in4 else o,
-            0, 0, 0, 0,
-        ])
+        # Bytes 4..7 are reserved/zero in the wire format.
+        payload = bytes(list(levels) + [0, 0, 0, 0])
         self.write_raw(cmd=cmd, data=payload, category=CAT_PARAM)
+
+    def set_routing(self, output_idx: int,
+                    in1: bool, in2: bool, in3: bool, in4: bool) -> None:
+        """Set which inputs feed a given output (boolean convenience wrapper).
+
+        Calls :meth:`set_routing_levels` with each True bool mapped to the
+        full-scale ``ROUTING_ON`` (= 100) and each False to ``ROUTING_OFF``
+        (= 0).  For partial / boosted levels use ``set_routing_levels``
+        directly.
+        """
+        levels = [
+            ROUTING_ON if in1 else ROUTING_OFF,
+            ROUTING_ON if in2 else ROUTING_OFF,
+            ROUTING_ON if in3 else ROUTING_OFF,
+            ROUTING_ON if in4 else ROUTING_OFF,
+        ]
+        self.set_routing_levels(output_idx, levels)
 
     # ── one-shot snapshot ──────────────────────────────────────────────
     def snapshot(self) -> DeviceInfo:

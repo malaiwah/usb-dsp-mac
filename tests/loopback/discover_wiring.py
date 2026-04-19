@@ -26,9 +26,6 @@ import time
 sys.path.insert(0, "/home/mbelleau/dsp408")
 
 import numpy as np
-
-from dsp408 import Device, enumerate_devices
-
 from audio_io import (
     DEFAULT_SR,
     PLAYBACK_CHANNELS,
@@ -36,6 +33,8 @@ from audio_io import (
     sine,
     tone_level_at,
 )
+
+from dsp408 import Device, enumerate_devices
 
 # Threshold for "this signal arrived" (well above ambient noise floor)
 ARRIVED_DBFS = -50.0
@@ -99,7 +98,7 @@ def main() -> None:
             m = measure_arrival(cap, TONE_HZ)
             ok_silent = max(m["in1"], m["in2"]) < ARRIVED_DBFS
             ok_lp = m[f"lp{sc_out+1}"] > -40  # loopback should see what we played
-            status_lp = "✓" if ok_lp else "✗ (Scarlett OUT {} producing no sound!)".format(sc_out+1)
+            status_lp = "✓" if ok_lp else f"✗ (Scarlett OUT {sc_out+1} producing no sound!)"
             status_silent = "✓ silent (good)" if ok_silent else "✗ (signal on IN with no routing — bleed?)"
             print(f"  Scarlett OUT {sc_out+1} → "
                   f"LP{sc_out+1}={m[f'lp{sc_out+1}']:+6.1f} dBFS {status_lp}, "

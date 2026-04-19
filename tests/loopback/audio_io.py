@@ -23,12 +23,10 @@ recorded signal aligned to the playback timeline.
 from __future__ import annotations
 
 import math
-import time
 from dataclasses import dataclass
 
 import numpy as np
 import sounddevice as sd
-
 
 # ── Hardware constants for Scarlett 2i2 4th Gen ───────────────────────────
 SCARLETT_NAME_HINT = "Scarlett"
@@ -144,7 +142,6 @@ def play_and_record(playback_lr: np.ndarray, sr: int = DEFAULT_SR,
     pre = np.zeros((int(pad_pre_s * sr), PLAYBACK_CHANNELS), dtype=np.float64)
     post = np.zeros((int(pad_post_s * sr), PLAYBACK_CHANNELS), dtype=np.float64)
     full_play = np.vstack([pre, playback_lr, post])
-    n = len(full_play)
 
     # sounddevice plays back float — we convert to int32 manually to bit-perfect
     # match the Scarlett's S32_LE format and avoid hidden dithering / scaling.
