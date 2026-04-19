@@ -636,9 +636,14 @@ class Device:
             "threshold": blob[OFF_THRESHOLD],
         }
         linkgroup = blob[OFF_LINKGROUP]
-        name = (blob[OFF_NAME:OFF_NAME + NAME_LEN]
-                .rstrip(b"\x00 \xff")
-                .decode("ascii", errors="replace"))
+        # Name field: filter to printable ASCII; if no printable bytes
+        # remain, treat as empty.  Real channel names (from Windows app)
+        # are 7-bit ASCII like "TWEETER".  Non-ASCII bytes here usually
+        # mean the offset is wrong for this firmware variant or the
+        # field is uninitialized.
+        name_raw = bytes(blob[OFF_NAME:OFF_NAME + NAME_LEN])
+        name_clean = bytes(b for b in name_raw if 0x20 <= b < 0x7F)
+        name = name_clean.rstrip().decode("ascii", errors="replace")
 
         db = (raw_vol - CHANNEL_VOL_OFFSET) / 10.0
         muted = (en_bit == 0)
