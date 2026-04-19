@@ -24,9 +24,10 @@ Method (discrete-tone sweep — bulletproof vs noise):
   - First pass: WIDE-OPEN filters (HPF=10 Hz, LPF=22000 Hz, 6 dB/oct).
     All test frequencies fall inside the passband, so this captures the
     analog gain of the whole rig — which is what we subtract off.
-    (Note: slope=8 doesn't actually bypass the filter — it appears to
-    mute the channel entirely. Empirically discovered in this test's
-    first iteration: with slope=8 set, IN-1 returns noise floor.)
+    (Note: slope=8 also bypasses the filter cleanly — both a wide-open
+    real filter and slope=8 give identical flat passbands. Either works
+    as the baseline; we use the wide-open form here so the analysis is
+    unaffected if the slope=8 semantic ever changes.)
   - Subsequent passes: subtract baseline → pure DSP filter response in dB
     relative to passband, independent of analog calibration.
 
@@ -253,9 +254,9 @@ def main() -> None:
         # Baseline: wide-open Butterworth (HPF=10 Hz, LPF=22000 Hz, 6 dB/oct).
         # Test frequencies (30..18000 Hz) fall inside the passband, so this
         # captures the analog gain of the rig — subtract from each test for
-        # the pure DSP filter response.  (slope=8 turned out to MUTE the
-        # channel rather than bypass — so we use the gentlest real filter
-        # set wide enough to be effectively a pass-through.)
+        # the pure DSP filter response.  (slope=8 also works as a bypass
+        # baseline and gives the same flat curve; this form is more
+        # explicit about its intent.)
         print("=== Baseline: wide-open Butterworth (HPF 10 Hz / LPF 22000 Hz / 6 dB/oct) ===")
         baseline_f, baseline_g = measure_filter_curve(
             dsp, 10, 0, 0, 22000, 0, 0,

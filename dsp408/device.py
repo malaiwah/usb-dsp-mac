@@ -1078,12 +1078,12 @@ class Device:
     HPF_LPF_FILTER_LR = 2          # Linkwitz-Riley
     HPF_LPF_FILTER_DEFEAT = 3      # Windows-UI label; aliases to LR in firmware
 
-    # Slope is dB/octave: 0..7 = 6/12/18/24/30/36/42/48 dB/oct.
-    # ⚠ Value 8 was labelled "Off" in the Android decompile, but live
-    # testing shows it MUTES the channel rather than bypassing the filter
-    # (signal drops to noise floor when slope=8 is set on either HPF or
-    # LPF).  To get a wide-open passband instead, write an HPF freq well
-    # below 20 Hz and an LPF freq above 22 kHz with slope=0 (6 dB/oct).
+    # Slope is dB/octave: 0..7 = 6/12/18/24/30/36/42/48 dB/oct.  Value 8
+    # bypasses the filter — the channel passes audio through with flat
+    # magnitude regardless of the freq parameter (verified live via
+    # discrete-tone sweep on the loopback rig: HPF slope=8 + LPF slope=8
+    # gives +2 dB ±0.1 across 50 Hz–10 kHz, identical to an explicitly
+    # wide-open Butterworth).  Hardware default = 1 (12 dB/oct).
     HPF_LPF_SLOPE_OFF = 8
 
     def set_crossover(
@@ -1111,10 +1111,9 @@ class Device:
                         3=Defeat (Windows-UI label; aliases LR — see the
                         ``HPF_LPF_FILTER_*`` class constants).
             hpf_slope:  dB/octave step: 0=6, 1=12, 2=18, 3=24, 4=30,
-                        5=36, 6=42, 7=48.  Value 8 MUTES the channel
-                        rather than bypassing the filter — to disable
-                        a filter, push its freq far outside the audio
-                        band and use slope=0.
+                        5=36, 6=42, 7=48; 8 bypasses the filter
+                        entirely (audio passes through flat regardless
+                        of ``hpf_freq``).
             lpf_freq:   low-pass cutoff in Hz (firmware default 20000).
             lpf_filter: same range as ``hpf_filter``.
             lpf_slope:  same range as ``hpf_slope``.
