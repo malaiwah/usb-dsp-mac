@@ -61,6 +61,10 @@ from .protocol import (
     CMD_STATUS,
     CMD_WRITE_CHANNEL_BASE,
     CMD_WRITE_CROSSOVER_BASE,
+    CMD_WRITE_EQ_BAND_BASE,
+    EQ_BAND_COUNT,
+    EQ_DEFAULT_FREQS_HZ,
+    EQ_Q_BW_CONSTANT,
     DIR_CMD,
     DIR_RESP,
     DIR_WRITE,
@@ -1140,6 +1144,118 @@ class Device:
             lpf_filter, lpf_slope,
         ])
         cmd = CMD_WRITE_CROSSOVER_BASE + channel  # 0x12000..0x12007
+        self.write_raw(cmd=cmd, data=payload, category=CAT_PARAM)
+
+    # ── parametric EQ (10 bands per channel) ────────────────────────────
+    # Live-validated 2026-04-19 via Scarlett loopback + pink-noise PSD
+    # ratio (see tests/loopback/_probe_eq_pink.py for the calibration
+    # script).  Each output channel has 10 peaking-EQ bands at default
+    # ISO octave centers ``EQ_DEFAULT_FREQS_HZ`` (31, 65, 125, 250, 500,
+    # 1000, 2000, 4000, 8000, 16000 Hz).  Each band has independent
+    # freq / gain / Q.
+    #
+    # Band-count limit (verified by _probe_eq_extra_bands.py):
+    #   * Bands 10..30 are silently ACKed by the firmware but produce
+    #     **no** acoustic effect — the Windows GUI's "10 bands" is the
+    #     real upper bound, not a UI limit.  Writes to higher band indices
+    #     don't fail but don't do anything either.
+    #
+    # Frequency / band-index independence (verified same probe):
+    #   * The 10 default centres are *defaults*, not constraints.  You
+    #     can put band 0 at 16 kHz and band 9 at 31 Hz and both peaks
+    #     appear at the requested fcs.  Bands are independent slots.
+    #
+    # The bandwidth byte is encoded as a fixed-point reciprocal of Q:
+    #
+    #     bandwidth_byte ≈ EQ_Q_BW_CONSTANT (= 256) / Q
+    #
+    # Measured peak BW₃ ↔ b4 across the validated b4∈[26..208] range:
+    #   b4= 26 → BW₃≈129 Hz (Q≈7.8) ;  b4= 52 → BW₃≈223 Hz (Q≈4.5, default)
+    #   b4=104 → BW₃≈410 Hz (Q≈2.5) ;  b4=208 → BW₃≈873 Hz (Q≈1.2)
+    # All peak gains land within ±0.1 dB of the requested value.
+    EQ_BAND_COUNT = EQ_BAND_COUNT
+    EQ_Q_BW_CONSTANT = EQ_Q_BW_CONSTANT
+    EQ_DEFAULT_FREQS_HZ = EQ_DEFAULT_FREQS_HZ
+
+    @staticmethod
+    def q_to_bandwidth_byte(q: float) -> int:
+        """Convert a desired Q to the firmware's bandwidth byte.
+
+        Returns an int clamped to 1..255 (the byte is unsigned and 0
+        would be a divide-by-zero in the reciprocal encoding).
+        """
+        if q <= 0:
+            raise ValueError(f"q must be positive, got {q}")
+        b4 = round(EQ_Q_BW_CONSTANT / q)
+        return max(1, min(255, b4))
+
+    @staticmethod
+    def bandwidth_byte_to_q(b4: int) -> float:
+        """Inverse of :meth:`q_to_bandwidth_byte`."""
+        if not 1 <= b4 <= 255:
+            raise ValueError(f"b4 must be 1..255, got {b4}")
+        return EQ_Q_BW_CONSTANT / b4
+
+    def set_eq_band(
+        self,
+        channel: int,
+        band: int,
+        freq_hz: int,
+        gain_db: float,
+        q: float | None = None,
+        *,
+        bandwidth_byte: int | None = None,
+    ) -> None:
+        """Write one parametric-EQ band on one output channel.
+
+        The encoding maps the GUI's "freq / gain / Q" controls onto an
+        8-byte payload mirrored at blob[band*8 .. band*8+8] in the
+        296-byte channel state struct (verified live: a write here shows
+        up surgically at those offsets in the next read_channel_state).
+
+        Args:
+            channel:  0..7 (output channel index).
+            band:     0..9 (band index; default centers in
+                      ``EQ_DEFAULT_FREQS_HZ``).
+            freq_hz:  band centre frequency in Hz, u16.
+            gain_db:  ±60 dB (clamped); raw = (dB×10) + 600.
+            q:        peaking-EQ quality factor.  Higher = narrower peak.
+                      The firmware default is ~5 (b4=0x34).  Mutually
+                      exclusive with ``bandwidth_byte``; if both are
+                      omitted the firmware default of b4=0x34 is used.
+            bandwidth_byte: raw byte [4] of the payload (1..255).
+                      Use this only if you need to write an explicit byte
+                      value (e.g. for replaying a captured frame).  Use
+                      ``q`` for normal API use.
+
+        Raises:
+            ValueError: any param out of range, or both q + bandwidth_byte
+                given.
+        """
+        if not 0 <= channel <= 7:
+            raise ValueError(f"channel must be in 0..7, got {channel}")
+        if not 0 <= band < EQ_BAND_COUNT:
+            raise ValueError(
+                f"band must be in 0..{EQ_BAND_COUNT - 1}, got {band}")
+        if not 0 <= freq_hz <= 0xFFFF:
+            raise ValueError(f"freq_hz must fit in u16, got {freq_hz}")
+        if q is not None and bandwidth_byte is not None:
+            raise ValueError("pass q OR bandwidth_byte, not both")
+        if bandwidth_byte is None:
+            b4 = self.q_to_bandwidth_byte(q) if q is not None else 0x34
+        else:
+            if not 1 <= bandwidth_byte <= 255:
+                raise ValueError(
+                    f"bandwidth_byte must be 1..255, got {bandwidth_byte}")
+            b4 = bandwidth_byte
+        raw = max(0, min(1200,
+                         round(gain_db * 10 + CHANNEL_VOL_OFFSET)))
+        payload = bytes([
+            freq_hz & 0xFF, (freq_hz >> 8) & 0xFF,
+            raw & 0xFF, (raw >> 8) & 0xFF,
+            b4, 0, 0, 0,
+        ])
+        cmd = CMD_WRITE_EQ_BAND_BASE + (band << 8) + channel
         self.write_raw(cmd=cmd, data=payload, category=CAT_PARAM)
 
     # ── one-shot snapshot ──────────────────────────────────────────────

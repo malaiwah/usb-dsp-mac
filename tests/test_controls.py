@@ -751,3 +751,122 @@ def test_set_crossover_constants_match_blob_decode() -> None:
     assert Device.HPF_LPF_FILTER_LR == 2
     assert Device.HPF_LPF_FILTER_DEFEAT == 3
     assert Device.HPF_LPF_SLOPE_OFF == 8
+
+
+# ── parametric EQ (10 bands per channel) ─────────────────────────────────
+@pytest.mark.parametrize(
+    "channel,band,freq,gain_db,bw_byte,expected_cmd,expected_payload_hex",
+    [
+        # Band 5 default-Q (b4=0x34) at +12 dB / 1000 Hz on ch1 — exactly
+        # what the Scarlett-loopback probe (_probe_eq.py) wrote.  The
+        # device returns this same payload byte-for-byte from a follow-up
+        # read_channel_state() at blob[5*8 .. 5*8+8].  Verified live
+        # 2026-04-19.
+        (1, 5, 1000, +12.0, 0x34, 0x10501, "e8 03 d0 02 34 00 00 00"),
+        # Half-Q (b4=0x1A) — narrower peak. Same fc/gain.
+        (1, 5, 1000, +12.0, 0x1A, 0x10501, "e8 03 d0 02 1a 00 00 00"),
+        # Double-Q (b4=0x68) — wider peak.
+        (1, 5, 1000, +12.0, 0x68, 0x10501, "e8 03 d0 02 68 00 00 00"),
+        # Default firmware band 0: 31 Hz / 0 dB / b4=0x34 on ch0
+        (0, 0, 31, 0.0, 0x34, 0x10000, "1f 00 58 02 34 00 00 00"),
+        # cmd encoding sweep: band index lives in HIGH byte, channel in LOW byte.
+        # gain raw = (dB×10) + 600  →  -6 dB = 540 = 0x021c, +3 dB = 630 = 0x0276
+        (3, 9, 16000, -6.0, 0x34, 0x10903, "80 3e 1c 02 34 00 00 00"),
+        (7, 0, 31, +3.0, 0x34, 0x10007, "1f 00 76 02 34 00 00 00"),
+    ],
+)
+def test_set_eq_band_matches_capture(
+    channel, band, freq, gain_db, bw_byte,
+    expected_cmd, expected_payload_hex,
+) -> None:
+    """The 8-byte payload mirrors blob[band*8 .. band*8+8] in the channel
+    state struct; live-validated 2026-04-19 by writing then reading back
+    via read_channel_state().  See tests/loopback/_probe_eq.py."""
+    d, t = _make_device()
+    d.set_eq_band(channel, band, freq, gain_db, bandwidth_byte=bw_byte)
+    cmd, cat, direction, seq = _last_meta(t)
+    assert cmd == expected_cmd
+    assert cat == CAT_PARAM
+    assert direction == DIR_WRITE
+    assert seq == 0
+    expected = bytes.fromhex(expected_payload_hex.replace(" ", ""))
+    assert _last_payload(t) == expected
+
+
+def test_set_eq_band_q_shorthand_matches_byte() -> None:
+    """The q= keyword and bandwidth_byte= keyword should produce equivalent
+    frames when q ↔ b4 round-trips exactly.  q=5 → b4 = round(256/5) = 51."""
+    d_q, t_q = _make_device()
+    d_b, t_b = _make_device()
+    d_q.set_eq_band(channel=1, band=5, freq_hz=1000, gain_db=+12, q=5)
+    d_b.set_eq_band(channel=1, band=5, freq_hz=1000, gain_db=+12,
+                    bandwidth_byte=51)
+    assert _last_payload(t_q) == _last_payload(t_b)
+    assert _last_meta(t_q) == _last_meta(t_b)
+
+
+def test_set_eq_band_default_q_uses_firmware_default() -> None:
+    """Calling without q= or bandwidth_byte= should write b4=0x34, matching
+    every WRITE seen in captures/full-sequence.pcapng."""
+    d, t = _make_device()
+    d.set_eq_band(channel=1, band=5, freq_hz=1000, gain_db=+12)
+    payload = _last_payload(t)
+    assert payload[4] == 0x34
+
+
+def test_set_eq_band_rejects_bad_args() -> None:
+    d, _ = _make_device()
+    with pytest.raises(ValueError, match="channel"):
+        d.set_eq_band(8, 0, 1000, 0)
+    with pytest.raises(ValueError, match="channel"):
+        d.set_eq_band(-1, 0, 1000, 0)
+    with pytest.raises(ValueError, match="band"):
+        d.set_eq_band(0, 10, 1000, 0)
+    with pytest.raises(ValueError, match="band"):
+        d.set_eq_band(0, -1, 1000, 0)
+    with pytest.raises(ValueError, match="freq_hz"):
+        d.set_eq_band(0, 0, 0x10000, 0)
+    with pytest.raises(ValueError, match="freq_hz"):
+        d.set_eq_band(0, 0, -1, 0)
+    with pytest.raises(ValueError, match="bandwidth_byte"):
+        d.set_eq_band(0, 0, 1000, 0, bandwidth_byte=0)
+    with pytest.raises(ValueError, match="bandwidth_byte"):
+        d.set_eq_band(0, 0, 1000, 0, bandwidth_byte=256)
+    # mutual exclusion
+    with pytest.raises(ValueError, match="q OR bandwidth_byte"):
+        d.set_eq_band(0, 0, 1000, 0, q=5, bandwidth_byte=51)
+    # q must be positive
+    with pytest.raises(ValueError, match="q"):
+        Device.q_to_bandwidth_byte(0)
+    with pytest.raises(ValueError, match="q"):
+        Device.q_to_bandwidth_byte(-1)
+
+
+def test_eq_q_byte_round_trip_within_resolution() -> None:
+    """The Q ↔ b4 reciprocal mapping (Q ≈ 256 / b4) round-trips within the
+    granularity of an 8-bit byte for Q ∈ [1, 100].  Documents that Q < 1
+    saturates to b4=255 (Q ≈ 1.004) and Q > 256 isn't reachable."""
+    # Practical range: round-trip should match within ±10% (limited by b4
+    # being a single byte).
+    for q in (1.5, 2, 3, 5, 10, 20):
+        b4 = Device.q_to_bandwidth_byte(q)
+        q_back = Device.bandwidth_byte_to_q(b4)
+        assert abs(q_back - q) / q < 0.10, (
+            f"Q={q} round-trip too lossy: b4={b4} → Q≈{q_back}")
+    # Saturation: Q < 1 floors at b4=255 → Q≈1.004
+    assert Device.q_to_bandwidth_byte(0.5) == 255
+    assert Device.q_to_bandwidth_byte(1.0) == 255
+    # Very high Q clamps to b4=1 → Q=256 (max)
+    assert Device.q_to_bandwidth_byte(1000) == 1
+
+
+def test_set_eq_band_default_freqs_match_blob() -> None:
+    """The 10 default centre frequencies match what a freshly-defaulted
+    channel state blob carries (verified live: ch1 blob[0..79] decoded to
+    31 / 65 / 125 / 250 / 500 / 1000 / 2000 / 4000 / 8000 / 16000 Hz)."""
+    assert Device.EQ_DEFAULT_FREQS_HZ == (
+        31, 65, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
+    assert Device.EQ_BAND_COUNT == 10
+    # The fixed-point Q constant is exactly 256 (= 2⁸), confirming the
+    # firmware's reciprocal-Q encoding.
+    assert Device.EQ_Q_BW_CONSTANT == 256.0

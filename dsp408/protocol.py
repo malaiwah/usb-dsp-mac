@@ -279,17 +279,44 @@ CMD_WRITE_GLOBAL = 0x2000       # writes global params (layout TBD)
 # captures/full-sequence.pcapng.
 CMD_WRITE_CROSSOVER_BASE = 0x12000
 
-# Per-channel parametric-EQ band writes (0x10BCC where B=band, C=channel).
-# B = 0..N (band index, 0-indexed; N TBD — capture only goes to band 1).
-# C = 0..7 (channel index, 0-indexed).
-# 8-byte payload (decoded from full-sequence.pcapng, NOT YET LIVE-VALIDATED):
+# Per-channel parametric-EQ band writes.
+#     cmd = 0x10000 + (band << 8) + channel
+#     band    = 0..9 (10 bands per channel; default centers 31/65/125/250/
+#               500/1000/2000/4000/8000/16000 Hz)
+#     channel = 0..7
+# 8-byte payload (live-validated 2026-04-19, see
+# tests/loopback/_probe_eq.py / docs/measurements/eq_band_q_sweep.md):
 #     [0..1]  freq Hz LE16
-#     [2..3]  gain raw LE16   dB = (raw - 600) / 10  (same as channel volume)
-#     [4]     0x34 = 52       constant in every observed write — Q? band id?
+#     [2..3]  gain raw LE16     dB = (raw - 600) / 10  (same as channel volume)
+#     [4]     bandwidth byte    Q × bandwidth_byte ≈ 256   (peaking EQ)
+#                               Higher = WIDER peak / LOWER Q.
+#                               Default 0x34 = 52 → Q ≈ 4.9.
 #     [5..7]  zeros
+# Live measurement at fc=1000 Hz / +12 dB (pink-noise / Welch sweep):
+#     b4=  8 → BW₃ ≈  59 Hz  → Q ≈ 17  (Q-resolution-limited)
+#     b4= 26 → BW₃ ≈ 129 Hz  → Q ≈ 7.8
+#     b4= 39 → BW₃ ≈ 170 Hz  → Q ≈ 5.9
+#     b4= 52 → BW₃ ≈ 223 Hz  → Q ≈ 4.5  (firmware default)
+#     b4= 78 → BW₃ ≈ 311 Hz  → Q ≈ 3.3
+#     b4=104 → BW₃ ≈ 410 Hz  → Q ≈ 2.5
+#     b4=208 → BW₃ ≈ 873 Hz  → Q ≈ 1.2
+# b4·Q ranges 230..260 across b4∈[39, 156]; the asymptote at 256 (= 2⁸)
+# strongly suggests the firmware encodes Q as Q ≈ 256/b4_byte using an
+# 8-bit fixed-point reciprocal.
 # The 296-byte variant (cmd=0x10000+ch with len=296) writes the entire
 # channel state struct; appears to be how the GUI does "reset EQ to flat".
 CMD_WRITE_EQ_BAND_BASE = 0x10000
+
+# Number of parametric-EQ bands per output channel (10 — verified by
+# decoding the channel-state blob at offsets 0..79).
+EQ_BAND_COUNT = 10
+# b4 ↔ Q relation (peaking EQ): Q ≈ EQ_Q_BW_CONSTANT / b4_byte.
+# The constant is 256 (= 2⁸) — empirically fitted across b4 ∈ [39..156]
+# at fc=1000 Hz / +12 dB to within ±5%. Asymptote suggests an 8-bit
+# fixed-point reciprocal in the firmware.
+EQ_Q_BW_CONSTANT = 256.0
+# Default EQ band centers (read from a freshly-defaulted channel blob).
+EQ_DEFAULT_FREQS_HZ = (31, 65, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
 
 # Master payload constants
 MASTER_LEVEL_MIN = 0     # raw = -60 dB
@@ -449,6 +476,9 @@ __all__ = [
     "CMD_WRITE_GLOBAL",
     "CMD_WRITE_CROSSOVER_BASE",
     "CMD_WRITE_EQ_BAND_BASE",
+    "EQ_BAND_COUNT",
+    "EQ_Q_BW_CONSTANT",
+    "EQ_DEFAULT_FREQS_HZ",
     "CMD_ROUTING_BASE",
     "CMD_MASTER",
     "MASTER_LEVEL_MIN",
