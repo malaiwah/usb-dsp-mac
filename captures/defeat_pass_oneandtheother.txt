@@ -1,0 +1,15 @@
+Capture: defeat_pass_oneandtheother.pcapng
+Date: 2026-04-19
+App: DSP-408.exe V1.24
+
+Contents: isolation capture for the "Defeat" filter type on both pass
+filters, applied one after the other. Used to verify the byte value
+written to h_filter and l_filter (expected 0x03) when the filter is
+bypassed via the Defeat option.
+
+Session sequence (in order):
+
+1. Low-pass filter type set to "Defeat"
+2. High-pass filter type set to "Defeat"
+
+Same 80 80 80 ee protocol.
