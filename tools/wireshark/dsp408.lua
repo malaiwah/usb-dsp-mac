@@ -162,8 +162,11 @@ local ef_unknown_cmd  = ProtoExpert.new("dsp408.unknown_cmd",  "Unnamed cmd — 
                                         expert.group.UNDECODED, expert.severity.WARN)
 local ef_orphan_reply = ProtoExpert.new("dsp408.orphan_reply", "Reply with no matching request in capture",
                                         expert.group.SEQUENCE, expert.severity.NOTE)
+local ef_decoder_err  = ProtoExpert.new("dsp408.decoder_err",  "Payload decoder raised an error",
+                                        expert.group.MALFORMED, expert.severity.ERROR)
 dsp408.experts = { ef_bad_magic, ef_bad_checksum, ef_bad_end, ef_multiframe,
-                   ef_abandoned, ef_reassembled, ef_unknown_cmd, ef_orphan_reply }
+                   ef_abandoned, ef_reassembled, ef_unknown_cmd, ef_orphan_reply,
+                   ef_decoder_err }
 
 -- ── Command name resolution ────────────────────────────────────────────
 local function resolve_cmd(cmd, direction, category, payload_len)
@@ -259,8 +262,8 @@ local function decode_master(tvb, tree)
   local mute = tvb(6,1):uint() == 0
   local db   = raw - 60
   tree:add(f.m_level_raw, tvb(0,1)):append_text(string.format(" (%+d dB)", db))
-  tree:add(f.m_level_db,  tvb(0,1), db)
-  tree:add(f.m_mute,      tvb(6,1), mute)
+  tree:add(f.m_level_db,  tvb(0,1), db):set_generated()
+  tree:add(f.m_mute,      tvb(6,1), mute):set_generated()
   return string.format("level=%+d dB%s", db, mute and " MUTED" or "")
 end
 
@@ -272,10 +275,10 @@ local function decode_channel(tvb, tree, cmd)
   local delay  = tvb(4,2):le_uint()
   local subidx = tvb(7,1):uint()
   local vol_db = (vol - 600) / 10
-  tree:add(f.d_channel, ch)
-  tree:add(f.c_enable,  tvb(0,1), enable)
+  tree:add(f.d_channel, ch):set_generated()
+  tree:add(f.c_enable,  tvb(0,1), enable):set_generated()
   tree:add(f.c_vol_raw, tvb(2,2), vol):append_text(string.format(" (%+0.1f dB)", vol_db))
-  tree:add(f.c_vol_db,  tvb(2,2), vol_db)
+  tree:add(f.c_vol_db,  tvb(2,2), vol_db):set_generated()
   tree:add(f.c_delay,   tvb(4,2), delay)
   local sub_name = SPK_TYPE_NAMES[subidx] or "?"
   tree:add(f.c_subidx,  tvb(7,1), subidx):append_text(" ("..sub_name..")")
@@ -333,13 +336,13 @@ local function decode_eq_band(tvb, tree, cmd)
   local bw   = tvb(4,1):uint()
   local gain_db = (gain - 600) / 10
   local q    = bw > 0 and (256.0 / bw) or 0
-  tree:add(f.d_band, band)
-  tree:add(f.d_channel, ch)
+  tree:add(f.d_band, band):set_generated()
+  tree:add(f.d_channel, ch):set_generated()
   tree:add_le(f.e_freq, tvb(0,2))
   tree:add_le(f.e_gain_raw, tvb(2,2)):append_text(string.format(" (%+0.1f dB)", gain_db))
-  tree:add_le(f.e_gain_db, tvb(2,2), gain_db)
+  tree:add_le(f.e_gain_db, tvb(2,2), gain_db):set_generated()
   tree:add(f.e_bw, tvb(4,1)):append_text(string.format(" (Q≈%0.2f)", q))
-  tree:add(f.e_q, tvb(4,1), q)
+  tree:add(f.e_q, tvb(4,1), q):set_generated()
   return string.format("band=%d ch=%d f=%dHz gain=%+0.1fdB Q≈%0.2f",
                        band, ch, freq, gain_db, q)
 end
@@ -523,6 +526,30 @@ local per_frame   = {}  -- frame_number → frame info
 local pending_req = {}  -- "cmd:cat" → { frame, ts }
 local paired      = {}  -- frame_number → { peer_frame, rtt_ms, role }
 
+-- pending_req eviction policy. Entries accumulate when a request never
+-- gets a matching reply (dropped URB, capture stopped mid-conversation,
+-- or request types with no reply). Without pruning, hours of capture
+-- leak thousands of stale entries. We cap both age (5 s of wall time in
+-- the capture) and count — whichever tightens first.
+local PENDING_REQ_MAX_AGE_S = 5.0
+local PENDING_REQ_MAX_ENTRIES = 256
+
+local function prune_pending_req(now_ts)
+  local count, oldest_key, oldest_ts = 0, nil, math.huge
+  for k, v in pairs(pending_req) do
+    if now_ts - v.ts > PENDING_REQ_MAX_AGE_S then
+      pending_req[k] = nil
+    else
+      count = count + 1
+      if v.ts < oldest_ts then oldest_ts, oldest_key = v.ts, k end
+    end
+  end
+  -- If still over the cap, drop the oldest surviving entry
+  if count > PENDING_REQ_MAX_ENTRIES and oldest_key then
+    pending_req[oldest_key] = nil
+  end
+end
+
 local function req_key(cmd, category)
   return string.format("%d:%d", cmd, category)
 end
@@ -531,10 +558,27 @@ end
 local REQ_DIRS = { [0xA1] = true, [0xA2] = true }
 local REPLY_OF = { [0xA1] = 0x51, [0xA2] = 0x53 }
 
--- Field extractor for USB endpoint (populated by the built-in USB dissector)
+-- Field extractors (populated by the built-in USB dissector — may be nil
+-- on captures that don't expose the field, e.g. usbmon without VID/PID).
 local f_usb_endpoint = Field.new("usb.endpoint_address")
 local f_usb_src      = Field.new("usb.src")
 local f_usb_dst      = Field.new("usb.dst")
+-- VID/PID — only present on transports that mirror them onto every URB
+-- (USBPcap, and usbmon after the device descriptor has been seen).
+-- Used to tighten the usb.bulk heuristic so we don't false-positive on
+-- 64-byte bulk traffic from other devices sharing the same bus.
+local f_usb_vid      = Field.new("usb.idVendor")
+local f_usb_pid      = Field.new("usb.idProduct")
+
+local function usb_is_dsp408_device(pinfo)
+  -- Returns true when the URB is known to belong to our VID/PID, or
+  -- nil-true (can't tell) when the fields aren't populated. Only returns
+  -- false when we can positively rule out the device.
+  local vid_fi = f_usb_vid()
+  local pid_fi = f_usb_pid()
+  if vid_fi == nil or pid_fi == nil then return nil end  -- unknown
+  return vid_fi.value == 0x0483 and pid_fi.value == 0x5750
+end
 
 local function conversation_key(pinfo)
   -- Combine endpoint + src/dst. Endpoint alone isn't enough if multiple
@@ -601,6 +645,8 @@ local function dissect_first_or_single(buffer, pinfo, tree)
 
   -- Request-reply pairing (first pass only, state lives across frames)
   if not pinfo.visited then
+    -- Amortized prune: only runs on request insertion, bounded work.
+    prune_pending_req(pinfo.abs_ts)
     local k = req_key(cmd, category)
     if REQ_DIRS[direction] then
       -- Stash this request so the matching reply can link back
@@ -641,9 +687,21 @@ local function dissect_first_or_single(buffer, pinfo, tree)
 
   if is_multi then
     n_cont = expected_continuation_count(payload_len)
-    subtree:add_tvb_expert_info(ef_multiframe, buffer(12, 2),
-      string.format("Multi-frame: declared %d bytes; expect %d continuation URB(s)",
-                    payload_len, n_cont))
+    -- Clamp to the same safety ceiling the heuristic enforces. A
+    -- crafted or mis-framed header claiming payload_len=65535 would
+    -- otherwise set n_cont ≈ 1024 and ask us to consume arbitrary
+    -- following URBs as continuations. Observed real max: 4.
+    if n_cont > MAX_CONTINUATION_FRAMES then
+      subtree:add_tvb_expert_info(ef_multiframe, buffer(12, 2),
+        string.format("Multi-frame declared %d bytes → %d continuations; " ..
+                      "clamping to MAX_CONTINUATION_FRAMES=%d",
+                      payload_len, n_cont, MAX_CONTINUATION_FRAMES))
+      n_cont = MAX_CONTINUATION_FRAMES
+    else
+      subtree:add_tvb_expert_info(ef_multiframe, buffer(12, 2),
+        string.format("Multi-frame: declared %d bytes; expect %d continuation URB(s)",
+                      payload_len, n_cont))
+    end
 
     -- First 50 payload bytes + register pending state (first pass only)
     local present = math.min(payload_len, MAX_PAYLOAD_MULTI_FIRST, len - HEADER_SIZE)
@@ -653,14 +711,19 @@ local function dissect_first_or_single(buffer, pinfo, tree)
     if not pinfo.visited then
       local key = conversation_key(pinfo)
       -- If a prior multi-frame is still pending on this conversation, mark
-      -- it abandoned (new magic arrived before completion).
+      -- it abandoned (new magic arrived before completion). The
+      -- expert-info is attached from the prior first frame's memo on
+      -- subsequent passes — see the abandoned-detail block below.
       local prior = pending[key]
       if prior then
-        per_frame[prior.first_frame] =
-          per_frame[prior.first_frame] or {}
+        per_frame[prior.first_frame] = per_frame[prior.first_frame] or {}
         per_frame[prior.first_frame].abandoned = true
+        per_frame[prior.first_frame].abandoned_at = pinfo.number
+        per_frame[prior.first_frame].abandoned_bytes = prior.declared
+                                                     - (prior.received * FRAME_SIZE)
         pending[key] = nil
       end
+      local ep_fi = f_usb_endpoint()
       pending[key] = {
         first_frame = pinfo.number,
         cmd         = cmd,
@@ -673,6 +736,7 @@ local function dissect_first_or_single(buffer, pinfo, tree)
         accum       = { buffer:raw(HEADER_SIZE, present) },
         dec_key     = dec_key,
         name        = name,
+        endpoint    = ep_fi and ep_fi.value or nil,
       }
       per_frame[pinfo.number] = {
         role     = "first",
@@ -690,7 +754,15 @@ local function dissect_first_or_single(buffer, pinfo, tree)
       local ptree = subtree:add(f.payload, ptvb)
       if dec_key and DECODERS[dec_key] then
         local ok, s = pcall(DECODERS[dec_key], ptvb, ptree, cmd)
-        if ok then summary = s end
+        if ok then
+          summary = s
+        else
+          -- Surface the decoder error instead of silently swallowing —
+          -- otherwise a decoder bug becomes invisible and we ship
+          -- "cmd decoded, but wrong" without anyone noticing.
+          ptree:add_tvb_expert_info(ef_decoder_err, ptvb,
+            string.format("decoder '%s' raised: %s", tostring(dec_key), tostring(s)))
+        end
       end
     end
 
@@ -727,7 +799,15 @@ local function dissect_first_or_single(buffer, pinfo, tree)
   if is_multi then
     info = info .. string.format(" [multi-frame first +%d cont]", n_cont)
     if first_frame_info and first_frame_info.abandoned then
-      info = info .. " ABANDONED"
+      info = info .. string.format(" ABANDONED (new magic at frame %d)",
+                                   first_frame_info.abandoned_at or 0)
+      -- Fire the expert-info on every pass so Wireshark shows the
+      -- red/yellow indicator in the GUI, not just in the Info column.
+      subtree:add_tvb_expert_info(ef_abandoned, buffer(12, 2),
+        string.format(
+          "Multi-frame abandoned: ~%d bytes unreceived before new magic at frame %d",
+          first_frame_info.abandoned_bytes or -1,
+          first_frame_info.abandoned_at or 0))
     end
   end
   pinfo.cols.info = info
@@ -827,7 +907,12 @@ local function dissect_continuation(buffer, pinfo, tree)
         local summary = nil
         if info.dec_key == "full_channel_state" or info.dec_key == "read_channel_state" then
           local ok, s = pcall(decode_full_channel_state_blob, full_tvb(), rtree, info.cmd)
-          if ok then summary = s end
+          if ok then
+            summary = s
+          else
+            rtree:add_tvb_expert_info(ef_decoder_err, full_tvb(),
+              string.format("full_channel_state blob decoder raised: %s", tostring(s)))
+          end
         elseif info.dec_key == "read_input_state" then
           subtree:add(full_tvb(), string.format(
             "Input-state blob (288 bytes) — decoder TBD; see dsp408/protocol.py CAT_INPUT notes"))
@@ -872,7 +957,19 @@ function dsp408.dissector(buffer, pinfo, tree)
   if len >= 4 and buffer(0, 4):uint() == FRAME_MAGIC then
     return dissect_first_or_single(buffer, pinfo, tree)
   end
-  -- Not a magic-bearing frame — must be a continuation
+  -- Not magic — the only valid path is a continuation of a pending
+  -- multi-frame on this conversation. Re-validate here in case the
+  -- dissector was registered on a table that doesn't go through our
+  -- heuristic (e.g. user added `dsp408` to usb.interrupt directly in
+  -- their init.lua). Without this guard, we'd try to dissect any
+  -- random traffic as a continuation.
+  if len ~= FRAME_SIZE then return 0 end
+  local key = conversation_key(pinfo)
+  if pending[key] == nil
+     and not (per_frame[pinfo.number]
+              and per_frame[pinfo.number].role == "continuation") then
+    return 0
+  end
   return dissect_continuation(buffer, pinfo, tree)
 end
 
@@ -883,24 +980,34 @@ local function is_dsp408_or_continuation(buffer, pinfo, tree)
   if len < 16 then return false end
   -- Magic-bearing frame
   if buffer(0, 4):uint() == FRAME_MAGIC then return true end
-  -- 64-byte interrupt URBs matching a pending conversation are continuations
-  if len == FRAME_SIZE then
-    local key = conversation_key(pinfo)
-    local state = pending[key]
-    if state then
-      -- Sanity-check the lookahead window
-      if pinfo.number - state.first_frame <= MAX_CONTINUATION_FRAMES then
-        return true
-      end
-      -- Beyond window — abandon
-      per_frame[state.first_frame] = per_frame[state.first_frame] or {}
-      per_frame[state.first_frame].abandoned = true
-      pending[key] = nil
+  -- Only continuations can reach here. Be strict: (a) exactly 64 bytes,
+  -- (b) matching conversation with pending state, (c) VID/PID agrees
+  -- when the transport exposes it. This rules out unrelated 64-byte
+  -- bulk traffic from other devices sharing the same USB bus.
+  if len ~= FRAME_SIZE then return false end
+  if usb_is_dsp408_device(pinfo) == false then return false end
+
+  local key = conversation_key(pinfo)
+  local state = pending[key]
+  if state then
+    -- Additionally require the endpoint to match the first frame's
+    -- endpoint — continuations travel on the SAME endpoint as the first.
+    local ep_fi = f_usb_endpoint()
+    if ep_fi and state.endpoint and ep_fi.value ~= state.endpoint then
+      return false
     end
-    -- Also check per_frame memo (re-dissection pass)
-    if per_frame[pinfo.number] and per_frame[pinfo.number].role == "continuation" then
+    if pinfo.number - state.first_frame <= MAX_CONTINUATION_FRAMES then
       return true
     end
+    -- Beyond window — abandon
+    per_frame[state.first_frame] = per_frame[state.first_frame] or {}
+    per_frame[state.first_frame].abandoned = true
+    per_frame[state.first_frame].abandoned_at = pinfo.number
+    pending[key] = nil
+  end
+  -- Also check per_frame memo (re-dissection pass)
+  if per_frame[pinfo.number] and per_frame[pinfo.number].role == "continuation" then
+    return true
   end
   return false
 end
