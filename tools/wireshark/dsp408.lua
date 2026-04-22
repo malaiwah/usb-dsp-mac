@@ -174,20 +174,10 @@ local function resolve_cmd(cmd, direction, category, payload_len)
     if cmd == 0x00 then return "preset_name", "preset_name" end
     if cmd == 0x02 then return "global_0x02", nil end
     if cmd == 0x03 then return "idle_poll",   nil end
-    if cmd == 0x04 then
-      if direction == 0xA1 and payload_len == 296 then
-        return "full_channel_state(ch=4)", "full_channel_state"
-      end
-      return "get_info", nil
-    end
-    if cmd >= 0x05 and cmd <= 0x07 then
-      if direction == 0xA1 and payload_len == 296 then
-        return string.format("full_channel_state(ch=%d)", cmd), "full_channel_state"
-      end
-      if cmd == 0x05 then return "master", "master" end
-      if cmd == 0x06 then return "global_0x06", nil end
-      if cmd == 0x07 then return string.format("cmd_0x%02X", cmd), nil end
-    end
+    if cmd == 0x04 then return "get_info",    nil end
+    if cmd == 0x05 then return "master",      "master" end
+    if cmd == 0x06 then return "global_0x06", nil end
+    if cmd == 0x07 then return string.format("cmd_0x%02X", cmd), nil end
     if cmd == 0x13 then return "state_0x13", nil end
     if cmd == 0x34 then
       if direction == 0xA1 then return "preset_save_trigger", "preset_save" end
@@ -197,6 +187,13 @@ local function resolve_cmd(cmd, direction, category, payload_len)
     if cmd == 0x37 then return "fw_meta",  nil end
     if cmd == 0x38 then return "fw_block", nil end
     if cmd == 0x39 then return "fw_apply", nil end
+    -- Reset MCU / reboot trigger. Leon v1.23 Define.SYSTEM_RESET_MCU=96;
+    -- sendResetMUCData() builds DataType=9, ChannelID=96, DataID=0, 8-byte
+    -- payload = current timestamp (sec/year/mon/day/hr/min/sec). Windows
+    -- V1.24 sends all zeros. Device responds with ack then USB-disconnects
+    -- for ~11-14 s before re-enumerating. Observed at end of
+    -- reset_to_defaults, windows-04 app-settings, windows-04b volume runs.
+    if cmd == 0x60 then return "reset_mcu", nil end
     if cmd == 0xCC then return "connect",  nil end
   end
 
@@ -214,6 +211,20 @@ local function resolve_cmd(cmd, direction, category, payload_len)
 
   if category == 0x04 then
     local lo = bit.band(cmd, 0xFF)
+    -- DataID=0 channel-state alias (leon: DataType=4, DataID=0, ChannelID=ch).
+    -- `SaveGroupData()` writes and the bulk-read routine both hit this path,
+    -- byte-identical to the 0x7700+ch variant. Used by Windows V1.24 for
+    -- initial sync (writes) and periodic reads; covers ch 0..7. Disambiguated
+    -- from CMD_GET_INFO=0x04 by category (this is 0x04, get_info is 0x09).
+    if cmd <= 0x07 then
+      if direction == 0xA1 and payload_len == 296 then
+        return string.format("full_channel_state(ch=%d)", cmd), "full_channel_state"
+      end
+      if direction == 0x53 and payload_len == 296 then
+        return string.format("read_channel_state(ch=%d)", cmd), "read_channel_state"
+      end
+      return string.format("full_channel_state(ch=%d)", cmd), nil
+    end
     if cmd >= 0x7700 and cmd <= 0x77FF then
       if direction == 0x53 and payload_len == 296 then
         return string.format("read_channel_state(ch=%d)", lo), "read_channel_state"

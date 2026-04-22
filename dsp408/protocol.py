@@ -360,6 +360,18 @@ CMD_FW_META = 0x37              # 4 bytes from .bin WMCU header offset 4
 CMD_FW_BLOCK = 0x38             # 48 bytes of firmware per packet
 CMD_FW_APPLY = 0x39             # 1 byte 0x13; applies and reboots
 
+# Reset MCU / reboot trigger. Leon v1.23 Define.SYSTEM_RESET_MCU=96 (0x60);
+# sendResetMUCData() (DataOptUtil.java:2725) emits DataType=9, ChannelID=96,
+# DataID=0 with an 8-byte payload of the current wall-clock timestamp
+# (sec/year_hi/year_lo/mon/day/hr/min/sec). Windows V1.24 sends 8 zero bytes
+# instead. Device ACKs then disconnects from USB for ~11-14 s before
+# re-enumerating. Seen at the end of captures/reset_to_defaults.pcapng,
+# captures/windows-04-app-connect-and-settings.pcapng, and
+# captures/windows-04b-volumes-mute-presets.pcapng — always right before the
+# device silently goes away and comes back. Appears to be how the
+# client-side GUI commits pending settings to flash and re-initialises.
+CMD_RESET_MCU = 0x60
+
 # Parameter commands (byte[7] = 0x04)
 # Channel-level reads: cmd = (0x77 << 8) | channel_index (0..7), returns
 # 296 bytes. The constant below is just the 0x77 nibble that gets shifted
@@ -465,15 +477,29 @@ INPUT_CHANNEL_COUNT = 8  # firmware exposes 8 input slots (DSP-408 hw has 4
                          # RCA + 4 high-level; cells 6+ may be aux/BT/unused)
 INPUT_BLOB_SIZE = 288    # response length to cmd=0x77NN cat=0x03
 
-# Full-channel-state write (296 bytes, output side). Per Windows
-# preset-load capture (load_loaddisk_save_preset_bureau.pcapng), the GUI
-# uses TWO different cmd codes for "load preset from disk":
-#   - Channels 0..3: cmd = 0x10000 | ch    (cmd=0x10000..0x10003)
-#   - Channels 4..7: cmd = 0x04 | (ch-4)   (cmd=0x04..0x07)
-# The cmd=0x04..0x07 range collides with CMD_GET_INFO=0x04 for READS
-# (dir=a2, len=8) — disambiguated by direction + payload length.
-CMD_WRITE_FULL_CHANNEL_LO_BASE = 0x10000  # ch 0..3
-CMD_WRITE_FULL_CHANNEL_HI_BASE = 0x0004   # ch 4..7 (= 4 + (ch-4))
+# Full-channel-state write (296 bytes, output side). All live paths are on
+# cat=0x04 (CAT_PARAM). Two parallel cmd encodings observed:
+#   - DataID=119 (0x77), DataID<<8 | ch   = cmd 0x10000..0x10003 for ch 0..3
+#                                           PLUS cmd 0x04..0x07 for ch 4..7
+#     — emitted by the "Load preset from disk" flow in
+#     captures/load_loaddisk_save_preset_bureau.pcapng (frames 2019..2103).
+#   - DataID=0, ChannelID=ch              = cmd 0x00..0x07 for ch 0..7
+#     — emitted by the V1.24 Windows GUI's "SaveGroupData" init sync in
+#     captures/windows-04-app-connect-and-settings.pcapng (frames 6815..
+#     6899) AND captures/full-sequence.pcapng. Byte-identical blob
+#     contents between the two paths for the same channel (verified).
+#
+# Earlier notes incorrectly placed the cmd=0x04..0x07 variant on cat=0x09;
+# re-verification across every capture shows only cat=0x04.
+#
+# Disambiguation:
+#   cmd=0x04 cat=0x09 dir=a2 len=8   → CMD_GET_INFO (returns "MYDW-AV1.06")
+#   cmd=0x04 cat=0x04 dir=a1 len=296 → full_channel_state write for ch=4
+#   cmd=0x04 cat=0x04 dir=a2 len=8   → full_channel_state read for ch=4
+CMD_WRITE_FULL_CHANNEL_LO_BASE = 0x10000  # ch 0..3 (DataID=0x77 path)
+CMD_WRITE_FULL_CHANNEL_HI_BASE = 0x0004   # ch 4..7 (DataID=0x77 path, on cat=0x04)
+CMD_FULL_CHANNEL_ALIAS_BASE    = 0x0000   # ch 0..7 (DataID=0 path, on cat=0x04 —
+                                          # read + write both use this)
 
 # Save preset trigger (per Windows preset-save capture): the GUI emits
 # a dir=a1 WRITE to cmd=0x34 cat=0x09 with a single-byte 0x01 payload
@@ -754,6 +780,8 @@ __all__ = [
     "CMD_WRITE_EQ_BAND_BASE",
     "CMD_WRITE_FULL_CHANNEL_LO_BASE",
     "CMD_WRITE_FULL_CHANNEL_HI_BASE",
+    "CMD_FULL_CHANNEL_ALIAS_BASE",
+    "CMD_RESET_MCU",
     "CMD_PRESET_SAVE_TRIGGER",
     "PRESET_SAVE_TRIGGER_BYTE",
     "CAT_INPUT",
