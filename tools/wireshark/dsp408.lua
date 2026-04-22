@@ -422,68 +422,82 @@ local function decode_full_channel_state_blob(tvb, tree, cmd)
       band, freq, gdb, gain, bw, q))
   end
 
-  -- Basic record at 246..253: mute, polar, gain, delay, byte_252, spk_type
-  local mute   = tvb(246,1):uint() == 0   -- INVERTED
-  local polar  = tvb(247,1):uint()
-  local vol    = tvb(248,2):le_uint()
-  local delay  = tvb(250,2):le_uint()
-  local spktyp = tvb(253,1):uint()
+  -- ── Post-48 region offsets: firmware-correct, +2 from protocol.py ───
+  -- The protocol.py constants (OFF_MUTE=246, OFF_HPF_FREQ=254, etc.) were
+  -- calibrated against Python's read_response() output, which has a -2
+  -- shift from byte 48 onwards due to a parse_frame() truncation bug
+  -- (reads 48 bytes of multi-frame first when it should read 50 — no
+  -- chk/end on a multi-frame first). The two bugs cancel in Python land.
+  -- Our Lua reassembly uses the correct 50-byte first frame, so we read
+  -- firmware-truth bytes; all offsets in THIS block are shifted +2 from
+  -- protocol.py. Verified against reset_to_defaults.pcapng — every
+  -- channel shows audible / 0 dB / 0 delay and spk_type matching
+  -- CHANNEL_SUBIDX[ch] exactly, all factory defaults.
+  -- Will converge with protocol.py once the parse_frame bug is fixed.
+
+  -- Basic record at 248..255 (firmware-correct, +2 from protocol.py 246..253)
+  local mute   = tvb(248,1):uint() == 0   -- INVERTED: 1=audible, 0=muted
+  local polar  = tvb(249,1):uint()
+  local vol    = tvb(250,2):le_uint()
+  local delay  = tvb(252,2):le_uint()
+  local spktyp = tvb(255,1):uint()
   local vol_db = (vol - 600) / 10
-  local basic = tree:add(tvb(246, 8), "Basic (246..253)")
-  basic:add(tvb(246,1), string.format("mute (inv): %s", mute and "MUTED" or "audible"))
-  basic:add(tvb(247,1), string.format("polar: %s", polar == 0 and "normal" or "inverted"))
-  basic:add(tvb(248,2), string.format("vol: %+0.1f dB (raw=%d)", vol_db, vol))
-  basic:add(tvb(250,2), string.format("delay: %d samples", delay))
-  basic:add(tvb(252,1), string.format("byte_252: 0x%02X (semantics unknown)", tvb(252,1):uint()))
-  basic:add(tvb(253,1), string.format("spk_type: %d (%s)", spktyp, SPK_TYPE_NAMES[spktyp] or "?"))
+  local basic = tree:add(tvb(248, 8), "Basic (248..255)")
+  basic:add(tvb(248,1), string.format("mute (inv): %s", mute and "MUTED" or "audible"))
+  basic:add(tvb(249,1), string.format("polar: %s", polar == 0 and "normal" or "inverted"))
+  basic:add(tvb(250,2), string.format("vol: %+0.1f dB (raw=%d)", vol_db, vol))
+  basic:add(tvb(252,2), string.format("delay: %d samples", delay))
+  basic:add(tvb(254,1), string.format("byte_254: 0x%02X (semantics unknown)", tvb(254,1):uint()))
+  basic:add(tvb(255,1), string.format("spk_type: %d (%s)", spktyp, SPK_TYPE_NAMES[spktyp] or "?"))
 
-  -- Crossover 254..261
-  local hpf_f = tvb(254,2):le_uint()
-  local hpf_t = tvb(256,1):uint()
-  local hpf_s = tvb(257,1):uint()
-  local lpf_f = tvb(258,2):le_uint()
-  local lpf_t = tvb(260,1):uint()
-  local lpf_s = tvb(261,1):uint()
-  local xtree = tree:add(tvb(254, 8), "Crossover (254..261)")
-  xtree:add(tvb(254,2), string.format("HPF: %d Hz", hpf_f))
-  xtree:add(tvb(256,1), string.format("HPF type: %s", FILTER_TYPE_NAMES[hpf_t] or "?"))
-  xtree:add(tvb(257,1), string.format("HPF slope: %s", SLOPE_NAMES[hpf_s] or "?"))
-  xtree:add(tvb(258,2), string.format("LPF: %d Hz", lpf_f))
-  xtree:add(tvb(260,1), string.format("LPF type: %s", FILTER_TYPE_NAMES[lpf_t] or "?"))
-  xtree:add(tvb(261,1), string.format("LPF slope: %s", SLOPE_NAMES[lpf_s] or "?"))
+  -- Crossover 256..263 (firmware-correct)
+  local hpf_f = tvb(256,2):le_uint()
+  local hpf_t = tvb(258,1):uint()
+  local hpf_s = tvb(259,1):uint()
+  local lpf_f = tvb(260,2):le_uint()
+  local lpf_t = tvb(262,1):uint()
+  local lpf_s = tvb(263,1):uint()
+  local xtree = tree:add(tvb(256, 8), "Crossover (256..263)")
+  xtree:add(tvb(256,2), string.format("HPF: %d Hz", hpf_f))
+  xtree:add(tvb(258,1), string.format("HPF type: %s", FILTER_TYPE_NAMES[hpf_t] or "?"))
+  xtree:add(tvb(259,1), string.format("HPF slope: %s", SLOPE_NAMES[hpf_s] or "?"))
+  xtree:add(tvb(260,2), string.format("LPF: %d Hz", lpf_f))
+  xtree:add(tvb(262,1), string.format("LPF type: %s", FILTER_TYPE_NAMES[lpf_t] or "?"))
+  xtree:add(tvb(263,1), string.format("LPF slope: %s", SLOPE_NAMES[lpf_s] or "?"))
 
-  -- Mixer 262..269 (IN1..IN8 levels)
-  local mxtree = tree:add(tvb(262, 8), "Mixer (262..269)")
+  -- Mixer 264..271 (IN1..IN8 levels, firmware-correct)
+  local mxtree = tree:add(tvb(264, 8), "Mixer (264..271)")
   local mx = {}
   for i = 0, 7 do
-    local v = tvb(262 + i, 1):uint()
-    mxtree:add(tvb(262+i,1), string.format("IN%d: 0x%02X", i+1, v))
+    local v = tvb(264 + i, 1):uint()
+    mxtree:add(tvb(264+i,1), string.format("IN%d: 0x%02X", i+1, v))
     if v ~= 0 then mx[#mx+1] = string.format("IN%d=0x%02X", i+1, v) end
   end
 
-  -- 270..277: compressor shadow (read-only mirror, never changes) — skip detailed decode
+  -- 272..279: compressor shadow (read-only mirror, never changes) — skip detailed decode
 
-  -- Compressor at 278..285
-  local cq      = tvb(278,2):le_uint()
-  local cattack = tvb(280,2):le_uint()
-  local crel    = tvb(282,2):le_uint()
-  local cthresh = tvb(284,1):uint()
-  local clink   = tvb(285,1):uint()
-  local ctree = tree:add(tvb(278, 8), "Compressor (278..285)")
-  ctree:add(tvb(278,2), string.format("all_pass_q: %d", cq))
-  ctree:add(tvb(280,2), string.format("attack: %d ms", cattack))
-  ctree:add(tvb(282,2), string.format("release: %d ms", crel))
-  ctree:add(tvb(284,1), string.format("threshold: %d", cthresh))
-  ctree:add(tvb(285,1), string.format("linkgroup: %d", clink))
+  -- Compressor at 280..287 (firmware-correct)
+  local cq      = tvb(280,2):le_uint()
+  local cattack = tvb(282,2):le_uint()
+  local crel    = tvb(284,2):le_uint()
+  local cthresh = tvb(286,1):uint()
+  local clink   = tvb(287,1):uint()
+  local ctree = tree:add(tvb(280, 8), "Compressor (280..287)")
+  ctree:add(tvb(280,2), string.format("all_pass_q: %d", cq))
+  ctree:add(tvb(282,2), string.format("attack: %d ms", cattack))
+  ctree:add(tvb(284,2), string.format("release: %d ms", crel))
+  ctree:add(tvb(286,1), string.format("threshold: %d", cthresh))
+  ctree:add(tvb(287,1), string.format("linkgroup: %d", clink))
 
-  -- Name at 286..293
-  local name = tvb:raw(286, 8):gsub("[%z%s]+$", "")
-  tree:add(f.n_name, tvb(286, 8), name)
+  -- Name at 288..295 (firmware-correct)
+  local name = tvb:raw(288, 8):gsub("[%z%s]+$", "")
+  tree:add(f.n_name, tvb(288, 8), name)
 
   return string.format(
-    "ch=%d %s vol=%+0.1fdB HPF=%dHz LPF=%dHz mixer=[%s] name=%q",
+    "ch=%d %s vol=%+0.1fdB HPF=%dHz LPF=%dHz mixer=[%s] comp(Q=%d/a=%dms/r=%dms/t=%d/l=%d) name=%q",
     ch, mute and "MUTED" or "ON", vol_db, hpf_f, lpf_f,
     #mx > 0 and table.concat(mx, ",") or "off",
+    cq, cattack, crel, cthresh, clink,
     name)
 end
 
