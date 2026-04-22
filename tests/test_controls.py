@@ -259,20 +259,110 @@ def test_channel_subindex_is_correct_per_cmd() -> None:
         assert _last_payload(t)[7] == si, f"channel {ch} subidx wrong"
 
 
+def test_set_channel_mute_auto_primes_cache_from_device() -> None:
+    """Regression for the "distortion on first unmute after open" bug.
+
+    Before the fix: a fresh Device had the channel cache at its
+    factory defaults (db=0.0, delay=0).  Calling set_channel_mute
+    before anything else combined the new mute flag with those
+    defaults and wrote them back as the full 8-byte channel record —
+    **silently clobbering** whatever gain/delay the user had live on
+    the device.  On a system playing at high SPL with the channel
+    attenuated to say -20 dB, that's a +20 dB surge on unmute.
+
+    After the fix: the single-field wrappers call get_channel() on
+    first use per channel, priming the cache with live state so the
+    other fields are preserved.
+    """
+    from dsp408.protocol import (
+        CMD_READ_CHANNEL_BASE,
+        DIR_RESP,
+        OFF_GAIN,
+        OFF_MUTE,
+        OFF_SPK_TYPE,
+    )
+
+    d, t = _make_device()
+    # Inject a synthetic "live" channel blob that says ch2 is at -18 dB.
+    live_raw = int(round(-18.0 * 10 + 600))  # = 420
+    blob = bytearray(296)
+    blob[OFF_MUTE] = 1
+    blob[OFF_GAIN] = live_raw & 0xFF
+    blob[OFF_GAIN + 1] = (live_raw >> 8) & 0xFF
+    blob[OFF_SPK_TYPE] = 0x03  # default for ch2
+    synth_frame = Frame(
+        direction=DIR_RESP,
+        seq=0,
+        category=CAT_PARAM,
+        cmd=(CMD_READ_CHANNEL_BASE << 8) | 2,
+        payload_len=len(blob),
+        payload=bytes(blob),
+        checksum=0,
+        checksum_ok=True,
+        raw=b"\x00" * 64,
+    )
+    t.queue_reply(synth_frame)
+    t.queue_reply(synth_frame)  # read_channel_state reads up to 2 for convergence
+
+    # Fresh Device (cache at defaults), immediate mute toggle
+    d.set_channel_mute(2, muted=True)
+
+    # Find the channel WRITE frame (the read frames don't count)
+    parsed = [parse_frame(f) for f in t.sent]
+    writes = [
+        f for f in parsed
+        if f is not None
+        and 0x1F00 <= f.cmd <= 0x1F07
+        and f.direction == DIR_WRITE
+    ]
+    assert len(writes) == 1, "exactly one channel write expected"
+    payload = bytes(writes[0].payload[:8])
+    # The write must include the LIVE gain (420 = -18 dB) NOT the
+    # cached default (600 = 0 dB).
+    written_raw = int.from_bytes(payload[2:4], "little")
+    assert written_raw == live_raw, (
+        f"set_channel_mute clobbered the live gain! "
+        f"wrote raw={written_raw} (= {(written_raw - 600) / 10.0} dB), "
+        f"expected {live_raw} (= -18 dB from the primed cache)"
+    )
+    # And the mute byte itself should be 0 (muted in the inverted
+    # convention used by the firmware)
+    assert payload[0] == 0, "mute flag must be 0 (muted) in the write payload"
+
+
 def test_channel_volume_then_mute_preserves_volume() -> None:
-    """set_channel_volume then set_channel_mute should retain the volume
-    (the cache layer makes this work despite no device readback)."""
+    """set_channel_volume then set_channel_mute should retain the volume.
+
+    The single-field wrappers auto-prime the cache on first use (by
+    reading live state via ``get_channel()``) so partial updates can't
+    clobber fields they don't touch.  In this fake-transport test the
+    prime read returns an unparseable synthetic frame, so the cache
+    falls back to defaults — after the first ``set_channel_volume``
+    write lands, though, the cache is marked authoritative with
+    db=-12, and the subsequent ``set_channel_mute`` combines that
+    with the new mute flag correctly.
+    """
     d, t = _make_device()
     d.set_channel_volume(0, db=-12)
     d.set_channel_mute(0, muted=True)
+    # Collect just the channel-write frames (cmd=0x1F00..0x1F07),
+    # skipping any read attempts made for cache priming.
+    parsed = [parse_frame(f) for f in t.sent]
+    writes = [
+        f for f in parsed
+        if f is not None
+        and 0x1F00 <= f.cmd <= 0x1F07
+        and f.direction == DIR_WRITE
+    ]
+    assert len(writes) == 2, (
+        f"expected 2 channel writes (volume then mute), got {len(writes)}"
+    )
     # First write: en=1 vol=480 (raw)
-    f1 = parse_frame(t.sent[0])
-    p1 = bytes(f1.payload[:8])
+    p1 = bytes(writes[0].payload[:8])
     assert p1[0] == 1  # enabled
     assert int.from_bytes(p1[2:4], "little") == 480  # -12 dB
     # Second write: en=0 (muted) vol still 480
-    f2 = parse_frame(t.sent[1])
-    p2 = bytes(f2.payload[:8])
+    p2 = bytes(writes[1].payload[:8])
     assert p2[0] == 0  # muted
     assert int.from_bytes(p2[2:4], "little") == 480  # unchanged
 

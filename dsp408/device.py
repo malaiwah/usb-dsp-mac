@@ -818,6 +818,11 @@ class Device:
             "delay": result["delay"],
             "subidx": result["subidx"],
         }
+        # Mark the cache authoritative for this channel — we just read
+        # live device state, so the convenience wrappers
+        # (set_channel_mute / set_channel_volume / set_channel_polar)
+        # can trust it and preserve other fields correctly.
+        self._channel_cache_primed.add(channel)
         return result
 
     def write_channel_param(
@@ -968,6 +973,23 @@ class Device:
                 }
                 for ch in range(8)
             ]
+            # Per-channel flag: True iff the cache entry reflects
+            # AUTHORITATIVE state (from a successful get_channel() read
+            # of live device state OR from a set_channel() call whose
+            # payload we constructed locally).  Starts empty on a fresh
+            # Device so the convenience wrappers
+            # (set_channel_mute / set_channel_volume / set_channel_polar)
+            # know they have to read live state before modifying one
+            # field — otherwise they'd combine the new field with
+            # stale defaults for every OTHER field and silently clobber
+            # the user's configured state on the device.
+            #
+            # See docs/KNOWN_ISSUES.md / git log for the bug that
+            # motivated this: set_channel_mute(ch, True) on a fresh
+            # session used to write the "0.0 dB" default back to the
+            # device, surging the channel's real gain up to 0 dB on
+            # unmute.
+            self._channel_cache_primed: set[int] = set()
 
     def set_channel(self, channel: int, db: float, muted: bool,
                     delay_samples: int = 0,
@@ -1017,7 +1039,11 @@ class Device:
                                         sub_index=si, polar=eff_polar)
         cmd = CMD_WRITE_CHANNEL_BASE + channel  # 0x1f00..0x1f07
         self.write_raw(cmd=cmd, data=payload, category=CAT_PARAM)
-        # Update cache (preserve subidx + new polar for next set call).
+        # Update cache (preserve subidx + new polar for next set call)
+        # and mark it authoritative — we know exactly what we just
+        # wrote, so subsequent partial-update wrappers
+        # (set_channel_mute/volume/polar) can combine their new field
+        # with this cached state without re-reading the device.
         self._channel_cache[channel] = {
             "db": float(db),
             "muted": bool(muted),
@@ -1025,22 +1051,86 @@ class Device:
             "delay": int(delay_samples),
             "subidx": si,
         }
+        self._channel_cache_primed.add(channel)
+
+    def _prime_channel_cache(self, channel: int) -> None:
+        """Ensure the cache for ``channel`` reflects live device state.
+
+        Single-field convenience wrappers (``set_channel_mute``,
+        ``set_channel_volume``, ``set_channel_polar``) read the *other*
+        fields from the cache when they re-write the 8-byte per-
+        channel record.  If the cache wasn't populated from the device
+        first, they'd combine the new field with the cache's factory
+        defaults (db=0.0, delay=0, polar=False) and silently clobber
+        whatever the user had configured — most notably, a mute toggle
+        after a fresh open would surge the channel's real gain up to
+        0 dB.
+
+        This helper auto-reads live state on first use per channel.
+        Subsequent calls are no-ops because every ``set_channel()`` /
+        ``get_channel()`` marks the cache authoritative.
+        """
+        self._channel_cache_init()
+        if channel not in self._channel_cache_primed:
+            # get_channel() reads live state and updates the cache +
+            # primed set.  If the read fails (e.g. blob doesn't parse)
+            # the cache stays at defaults — the caller can either
+            # accept that or call get_channel() explicitly and handle
+            # the None return.
+            try:
+                self.get_channel(channel)
+            except Exception:
+                # If we can't read the device, fall back to cache
+                # defaults — marginally better than hanging.  The
+                # primed flag stays False so a later retry will try
+                # again.
+                pass
 
     def set_channel_polar(self, channel: int, polar: bool) -> None:
-        """Toggle 180° phase invert on the channel, preserving volume/mute/delay."""
-        self._channel_cache_init()
+        """Toggle 180° phase invert on the channel, preserving volume/mute/delay.
+
+        On first use per channel after ``Device.open()``, automatically
+        reads live state from the device so the existing volume / mute /
+        delay are preserved.  Subsequent calls use the cached state,
+        which is kept authoritative by every ``set_channel()``
+        succeeding here or elsewhere.
+        """
+        self._prime_channel_cache(channel)
         c = self._channel_cache[channel]
         self.set_channel(channel, c["db"], c["muted"], c["delay"], polar=polar)
 
     def set_channel_volume(self, channel: int, db: float) -> None:
-        """Set per-channel volume in dB (-60..0), preserving mute + delay."""
-        self._channel_cache_init()
+        """Set per-channel volume in dB (-60..0), preserving mute + delay.
+
+        On first use per channel after ``Device.open()``, automatically
+        reads live state from the device so the existing mute / delay /
+        polar are preserved.  Subsequent calls use the cached state.
+        """
+        self._prime_channel_cache(channel)
         c = self._channel_cache[channel]
         self.set_channel(channel, db, c["muted"], c["delay"])
 
     def set_channel_mute(self, channel: int, muted: bool) -> None:
-        """Set per-channel mute on/off, preserving volume + delay."""
-        self._channel_cache_init()
+        """Set per-channel mute on/off, preserving volume + delay.
+
+        On first use per channel after ``Device.open()``, automatically
+        reads live state from the device so the user's configured
+        volume / delay / polar are preserved.  Subsequent calls use
+        the cached state, which is kept authoritative by every
+        ``set_channel()`` write.
+
+        **Why the auto-read**: without it, a mute toggle after a fresh
+        ``Device.open()`` would combine the new mute flag with the
+        cache's factory defaults (db=0.0, delay=0) and write that as
+        an 8-byte channel record — silently clobbering whatever gain /
+        delay the user had configured.  On a system playing at high
+        SPL with a channel attenuated to -20 dB, toggling mute would
+        surge that channel to 0 dB (= a 20 dB jump) and produce a
+        dangerous distortion / overload.  The one-time live read
+        pre-populates the cache so partial updates preserve everything
+        they don't touch.
+        """
+        self._prime_channel_cache(channel)
         c = self._channel_cache[channel]
         self.set_channel(channel, c["db"], muted, c["delay"])
 
@@ -1181,7 +1271,11 @@ class Device:
                            data=b"Custom\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
                            category=CAT_STATE)
         # Invalidate the per-channel cache — every channel's state has
-        # just been wiped back to factory defaults.
+        # just been wiped back to factory defaults.  Reset the primed
+        # set too so partial-update wrappers re-read live state next
+        # time (the factory defaults the firmware writes may not match
+        # what we assume in the cache, and the safest move is to
+        # re-confirm via get_channel on first use).
         if hasattr(self, "_channel_cache"):
             for ch in range(8):
                 self._channel_cache[ch] = {
@@ -1191,6 +1285,7 @@ class Device:
                     "delay": 0,
                     "subidx": CHANNEL_SUBIDX[ch],
                 }
+            self._channel_cache_primed.clear()
 
     # ── load factory preset (still UNVERIFIED) ─────────────────────────
     # The Windows GUI's preset-load action has NOT been captured yet.
