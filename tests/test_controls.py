@@ -629,6 +629,10 @@ def test_get_channel_updates_cache_with_discovered_subidx() -> None:
         checksum_ok=True,
         raw=b"\x00" * 64,  # placeholder; Device._exchange only checks .cmd
     )
+    # Queue twice — read_channel_state() double-reads by default to work
+    # around the firmware's early-session read-divergence quirk (see that
+    # method's docstring and tests/live/test_read_stability.py).
+    t.queue_reply(synth_frame)
     t.queue_reply(synth_frame)
 
     state = d.get_channel(1)

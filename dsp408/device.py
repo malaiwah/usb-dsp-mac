@@ -292,6 +292,23 @@ def _resolve_selector(
     raise TypeError(f"selector must be int|str|None, got {type(selector)}")
 
 
+def _payload_matches_ignoring_counter(a: bytes, b: bytes) -> bool:
+    """Byte-equal comparison that ignores the per-read counter byte
+    at offset 294 of a 296-byte channel-state blob.
+
+    The firmware increments byte[294] on every read (verified by doing
+    consecutive reads with no writes in between; only byte[294] ever
+    differs).  Used by :meth:`Device.read_channel_state` to decide when
+    two consecutive reads have converged.
+    """
+    if len(a) != len(b):
+        return False
+    # Fast path for the common 296-byte case
+    if len(a) == 296:
+        return a[:294] == b[:294] and a[295:] == b[295:]
+    return a == b
+
+
 class Device:
     """High-level DSP-408 USB control.
 
@@ -508,13 +525,57 @@ class Device:
         return reply
 
     # ── proven commands ────────────────────────────────────────────────
-    def connect(self) -> int:
-        """Open the command session. Returns the 1-byte status code the
-        device replies with (0x00 = ok)."""
+    def connect(self, *, warmup: bool = True) -> int:
+        """Open the command session.  Returns the 1-byte status code the
+        device replies with (``0x00`` = ok).
+
+        If ``warmup`` is true (default), also does a warmup pass over
+        every output channel to get past the firmware's early-session
+        read-divergence window (see :meth:`read_channel_state` for the
+        full characterisation).  The warmup pass issues 3 per-channel
+        reads × 8 channels = 24 single-frame reads, taking ~500 ms on
+        a Pi.  After warmup the channel-state reads return byte-exact
+        stable blobs.
+
+        Set ``warmup=False`` if you never call :meth:`read_channel_state`
+        (e.g. write-only MQTT bridges using only the event-driven
+        control surface).
+        """
         reply = self.read_raw(cmd=CMD_CONNECT, category=CAT_STATE)
         if not reply.payload:
             raise ProtocolError("CONNECT: empty payload")
+        if warmup:
+            self._warmup_channel_reads()
         return reply.payload[0]
+
+    def _warmup_channel_reads(self, rounds: int = 2) -> None:
+        """Read every output channel ``rounds`` times adaptively to push
+        past the firmware's cold-read window.
+
+        Empirical characterisation (2026-04-22, device ``4EAA4B964C00``
+        firmware v1.06):
+
+            100 consecutive reads of ch3 in a fresh session: 6/100
+            returned a 2-byte-left-shifted variant; all 6 divergent
+            reads were among the first 6 of the session.  Reads 6..99
+            were byte-exact stable.
+
+        Each adaptive ``read_channel_state()`` call (``double_read=True``,
+        the default) reads until two consecutive replies match — so a
+        single warmup round already eats the cold zone for most
+        channels.  Two rounds is belt-and-braces: if a channel was still
+        cold on round 1, round 2 reliably catches it.  Total cost:
+        ~500–1000 ms on a Pi (adaptive reads converge in 2–5 attempts).
+        """
+        for _ in range(rounds):
+            for ch in range(8):
+                try:
+                    self.read_channel_state(ch)
+                except ProtocolError:
+                    # A cold read can occasionally return a corrupt
+                    # frame that our parser rejects; we don't care,
+                    # the warmup's job is to push past this.
+                    pass
 
     def get_info(self) -> str:
         """Return the device identity string, e.g. `"MYDW-AV1.06"`."""
@@ -561,7 +622,13 @@ class Device:
         return reply.payload
 
     # ── parameter-level reads ──────────────────────────────────────────
-    def read_channel_state(self, channel: int) -> bytes:
+    def read_channel_state(
+        self,
+        channel: int,
+        *,
+        double_read: bool = True,
+        max_attempts: int = 6,
+    ) -> bytes:
         """Read the full state of output channel N (0..7) — 296 bytes.
 
         Layout is partially decoded.  Known prefix from one capture:
@@ -573,6 +640,32 @@ class Device:
         offset ~246:
             [en, 00, vol_lo, vol_hi, delay_lo, delay_hi, 00, subidx]
         Use `parse_channel_state_blob()` to extract that record.
+
+        **Firmware read-divergence quirk** (v1.06 ``MYDW-AV1.06``,
+        characterised 2026-04-22 — see
+        ``tests/live/test_read_stability.py``): on a fresh session the
+        first few reads of each channel occasionally return a blob with
+        a 2-byte left-shift in the upper bytes (offsets ≈ 48..245,
+        bands 6..9 + padding region).  Measured rate: 6 % of the first
+        100 reads of ch3, all within the first 6 reads; 0 % thereafter.
+        The intended per-channel record (mute / gain / delay / crossover
+        / routing / compressor / name at offsets 244..293) was NOT
+        affected in any observed trial, but byte-exact diffs of the EQ
+        region (used by surgical-write tests and in ``save_preset``)
+        were corrupted by this.
+
+        To guarantee a byte-exact read, this method defaults to an
+        **adaptive read-until-stable** strategy: it reads up to
+        ``max_attempts`` times, returning the first blob that matches
+        the previous blob (ignoring byte 294, a per-read counter).  If
+        the firmware never stabilises within the attempt budget, the
+        last read is returned.  In practice this converges in 2–3
+        attempts (cold reads may need 4–5).  Cost is 1–5× transport
+        latency — a full 296-byte read takes ~20 ms on a Pi.
+
+        Call with ``double_read=False`` (and optionally ``max_attempts``
+        reduced) if you need single-shot latency and are happy to accept
+        the occasional shifted blob (e.g. MQTT live-status polls).
         """
         if not 0 <= channel <= 7:
             raise ValueError(f"channel must be in 0..7, got {channel}")
@@ -581,8 +674,25 @@ class Device:
         # (Historically this method built `0x77 | (NN<<8)` which silently
         # produced wrong cmds for channel > 0 — fixed below.)
         cmd = (CMD_READ_CHANNEL_BASE << 8) | channel    # 0x7700, 0x7701, …
-        reply = self.read_raw(cmd=cmd, category=CAT_PARAM, timeout_ms=3000)
-        return reply.payload
+        if not double_read:
+            reply = self.read_raw(cmd=cmd, category=CAT_PARAM, timeout_ms=3000)
+            return reply.payload
+        # Adaptive: read until two consecutive replies agree (ignoring
+        # the per-read counter at byte 294).  Cold reads converge in
+        # 2–5 attempts on v1.06 firmware.
+        prev: bytes | None = None
+        reply_payload = b""
+        for _ in range(max_attempts):
+            reply = self.read_raw(cmd=cmd, category=CAT_PARAM, timeout_ms=3000)
+            reply_payload = reply.payload
+            if prev is not None and _payload_matches_ignoring_counter(
+                prev, reply_payload
+            ):
+                return reply_payload
+            prev = reply_payload
+        # Fell through max_attempts without convergence — return last
+        # read and let the caller notice if it's still divergent.
+        return reply_payload
 
     @staticmethod
     def parse_channel_state_blob(blob: bytes, channel: int) -> dict | None:

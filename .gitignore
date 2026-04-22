@@ -36,3 +36,4 @@ macos_hid_diag/
 macos_hid_driver/
 dsp-408-ui/
 hidapi_patch/
+uv.lock
